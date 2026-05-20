@@ -1184,6 +1184,12 @@ KEYWORD_POOL_CATEGORIES = [
 
 SALES_MARKETS = ["네이버", "쿠팡", "롯데ON", "11번가", "ESM"]
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+KEYWORD_PRODUCT_CHUNK_SIZE = 5
+KEYWORD_CODEX_STALL_SECONDS = 600
+KEYWORD_CODEX_MAX_WORKERS = 2
+MARKET_TITLE_TARGET_MIN = 30
+MARKET_TITLE_TARGET_MAX = 40
+NAVER_TITLE_TARGET_MAX = 40
 
 COMPOUND_SPACING_RULES = [
     ("카라비너릴고리", "카라비너 릴고리"),
@@ -2971,14 +2977,14 @@ def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = F
   4) 재질/규격은 상품 식별에 중요할 때만 추가
 - 상품명이 짧아질 때는 수량을 넣지 말고 기능/사용처/문제해결 단어로 채운다.
 - 좋은 상품명 예시 구조: `카라비너 릴고리 와이어 릴홀더 백팩 스트랩 연결고리`, `쿠션 깔창 신발 밑창 보강 패드 운동화 구두 PU`.
-- 네이버 상품명은 35-48자 사이를 우선한다. 50자를 넘기지 않는다.
+- 네이버 상품명은 30자 전후를 우선하고 최대 40자를 넘기지 않는다.
 - 네이버는 SEO 기준을 우선한다. 상품명 공식은 `브랜드/제조사 + 모델명/모델코드 + 상품유형/카테고리 + 색상/용도/주요속성`이지만, 브랜드/모델이 없으면 빼고 핵심 카테고리와 용도/속성을 앞에 둔다.
 - 네이버에서 참고할 항목은 브랜드/제조사, 시리즈, 모델명/모델코드, 상품 유형/카테고리, 색상, 소재, 구성품/수량, 사이즈, 대상 성별/연령, 용량/규격/주요 속성, 판매 옵션이다.
 - 네이버 상품명은 중요한 키워드를 앞쪽에 배치하고, 중복 단어/관련 없는 키워드/할인/세일/무료배송/광고 문구를 제외한다.
 - 네이버는 한글 중심으로 작성하고 필요한 경우에만 영문/숫자를 사용한다.
-- 쿠팡 상품명은 네이버보다 길게 가능하되 60-80자 안에서 자연스럽게 만든다.
-- 롯데ON은 네이버와 쿠팡 사이의 중간형으로 만든다.
-- 11번가와 ESM은 엑셀 업로드용이지만 너무 짧게 만들지 않는다. 45-62자 안에서 상품 유형, 기능, 사용처, 재질/규격, 문제해결어를 더 보강한다.
+- 쿠팡/롯데ON/11번가/ESM도 30자 전후, 최대 40자 기준으로 만든다.
+- 길이를 맞추기 위해 무의미한 단어를 넣지 않는다. 30자보다 짧아도 상품 정체성, 기능, 용도, 규격이 충분하면 그대로 둔다.
+- 상품명 보강 우선순위는 `상품유형/카테고리 > 핵심 기능 > 사용처 > 식별 규격/소재`다. 광고어, 상황을 억지로 늘린 말, 반복 단어는 넣지 않는다.
 - 11번가/ESM 검색어는 최소 14개 이상을 목표로 하고, 표준어 + 현장명 + 동의어 + 사용처 + 문제해결어를 충분히 넣는다.
 - A계정은 표준어/대표어 중심, B계정은 동의어/사용처/현장명 중심으로 다르게 만든다.
 - A/B 계정은 같은 단어만 순서 바꾸지 말고, 대표어와 현장명을 실제로 다르게 섞는다.
@@ -3075,6 +3081,50 @@ def seo_tag_terms(value: object, limit: int = 10) -> list[str]:
         for term in source
         if compact_search_keyword(strip_low_value_single_quantity(term))
     ])[:limit]
+
+
+def normalize_market_title(title: object, search_terms: object, tags: object, channel: str) -> str:
+    cleaned = clean_product_title(strip_low_value_single_quantity(title))
+    max_len = NAVER_TITLE_TARGET_MAX if channel.endswith(":네이버") else MARKET_TITLE_TARGET_MAX
+    if not cleaned:
+        return ""
+
+    def trim_to_limit(value: str) -> str:
+        value = clean_product_title(value)
+        if len(value) <= max_len:
+            return value
+        words = value.split()
+        if len(words) <= 1:
+            return value[:max_len].strip()
+        out: list[str] = []
+        for word in words:
+            candidate = " ".join(out + [word])
+            if len(candidate) > max_len:
+                break
+            out.append(word)
+        return clean_product_title(" ".join(out)) or value[:max_len].strip()
+
+    cleaned = trim_to_limit(cleaned)
+    if len(cleaned) >= MARKET_TITLE_TARGET_MIN:
+        return cleaned
+
+    compact_title = re.sub(r"\s+", "", cleaned).lower()
+    candidates = seo_tag_terms(tags, 20) + seo_tag_terms(search_terms, 30)
+    for term in unique_terms(candidates):
+        display = clean_product_title(strip_low_value_single_quantity(term))
+        if not display or len(display) < 2 or len(display) > 12:
+            continue
+        compact_display = re.sub(r"\s+", "", display).lower()
+        if compact_display in compact_title:
+            continue
+        candidate = clean_product_title(f"{cleaned} {display}")
+        if len(candidate) > max_len:
+            continue
+        cleaned = candidate
+        compact_title = re.sub(r"\s+", "", cleaned).lower()
+        if len(cleaned) >= MARKET_TITLE_TARGET_MIN:
+            break
+    return cleaned
 
 
 def diversify_naver_ab_tags(channel_map: dict[str, dict]) -> None:
@@ -3187,10 +3237,10 @@ def validate_keyword_result(payload: dict, products: list[dict], channels: list[
             value = raw_channels.get(channel)
             if not isinstance(value, dict):
                 continue
-            title = clean_product_title(strip_low_value_single_quantity(value.get("title")))
             search_terms = clean_keyword_terms(value.get("searchTerms") or value.get("search_terms"))
             tag_limit = 10 if channel.endswith(":네이버") else 30
             tags = seo_tag_terms(value.get("tags") if isinstance(value.get("tags"), list) else search_terms, tag_limit)
+            title = normalize_market_title(value.get("title"), search_terms, tags, channel)
             if not title or not search_terms:
                 continue
             candidate_count = len(tags) or len(split_candidate_terms(search_terms))
@@ -3968,32 +4018,67 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
                                     found.append(str(f.resolve()))
                     product_image_map[gs] = found[:5]
 
-        all_codex_images: list[str] = []
-        for image_idx in range(5):
-            for p in products:
-                gs = text_value(p.get("gs")).upper()
-                images = product_image_map.get(gs, [])
-                if image_idx < len(images):
-                    all_codex_images.append(images[image_idx])
+        def images_for_products(chunk_products: list[dict]) -> list[str]:
+            chunk_images: list[str] = []
+            for image_idx in range(5):
+                for product in chunk_products:
+                    gs = text_value(product.get("gs")).upper()
+                    images = product_image_map.get(gs, [])
+                    if image_idx < len(images):
+                        chunk_images.append(images[image_idx])
+            return chunk_images
 
-        group_work_dirs: dict[str, Path] = {}
+        raw_chunk_size = payload.get("keywordProductChunkSize") or payload.get("productChunkSize") or KEYWORD_PRODUCT_CHUNK_SIZE
+        try:
+            chunk_size = int(raw_chunk_size)
+        except Exception:
+            chunk_size = KEYWORD_PRODUCT_CHUNK_SIZE
+        chunk_size = max(1, min(20, chunk_size))
+        try:
+            stall_seconds = int(payload.get("keywordStallSeconds") or KEYWORD_CODEX_STALL_SECONDS)
+        except Exception:
+            stall_seconds = KEYWORD_CODEX_STALL_SECONDS
+        stall_seconds = max(120, stall_seconds)
+        product_chunks = [products[i:i + chunk_size] for i in range(0, len(products), chunk_size)]
+
+        work_items: list[dict] = []
+        total_codex_images = sum(len(images_for_products(chunk)) for chunk in product_chunks)
         for group_label, group_channels in channel_groups:
-            gdir = work_dir / f"group_{group_label}"
-            gdir.mkdir(parents=True, exist_ok=True)
-            group_work_dirs[group_label] = gdir
-            input_name = "keyword_input.json"
-            output_name = "keyword_result.json"
-            input_payload = {
-                "schema": "webocr.keyword.input.v1",
-                "createdAt": now_text(),
-                "seedFile": str(seed_path),
-                "channels": group_channels,
-                "options": payload.get("options", {}),
-                "policy": SEED_ANALYSIS_POLICY,
-                "products": products,
-            }
-            write_json(gdir / input_name, input_payload)
-            (gdir / "prompt.md").write_text(build_keyword_prompt(input_name, output_name, has_images=bool(all_codex_images)), encoding="utf-8")
+            for chunk_index, chunk_products in enumerate(product_chunks, start=1):
+                work_label = group_label if len(product_chunks) == 1 else f"{group_label}_{chunk_index:02d}"
+                gdir = work_dir / f"group_{work_label}"
+                gdir.mkdir(parents=True, exist_ok=True)
+                input_name = "keyword_input.json"
+                output_name = "keyword_result.json"
+                chunk_images = images_for_products(chunk_products)
+                input_payload = {
+                    "schema": "webocr.keyword.input.v1",
+                    "createdAt": now_text(),
+                    "seedFile": str(seed_path),
+                    "channels": group_channels,
+                    "options": payload.get("options", {}),
+                    "policy": SEED_ANALYSIS_POLICY,
+                    "chunk": {
+                        "index": chunk_index,
+                        "total": len(product_chunks),
+                        "productChunkSize": chunk_size,
+                    },
+                    "products": chunk_products,
+                }
+                write_json(gdir / input_name, input_payload)
+                (gdir / "prompt.md").write_text(build_keyword_prompt(input_name, output_name, has_images=bool(chunk_images)), encoding="utf-8")
+                work_items.append({
+                    "workLabel": work_label,
+                    "groupLabel": group_label,
+                    "channels": group_channels,
+                    "products": chunk_products,
+                    "images": chunk_images,
+                    "workDir": gdir,
+                    "inputName": input_name,
+                    "outputName": output_name,
+                    "chunkIndex": chunk_index,
+                    "chunkTotal": len(product_chunks),
+                })
 
         job.update({
             "seedPath": str(seed_path),
@@ -4001,9 +4086,11 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
             "selectedGs": [product["gs"] for product in products],
             "totalProducts": len(products),
             "totalChannels": len(channels),
-            "parallelGroups": len(channel_groups),
+            "parallelGroups": len(work_items),
+            "keywordProductChunkSize": chunk_size,
+            "keywordStallSeconds": stall_seconds,
             "progressPercent": 10,
-            "currentStage": f"Codex 입력 작성 완료 · 상품 {len(products)}개 · 채널 {len(channels)}개 · {len(channel_groups)}그룹 병렬 · 이미지 {len(all_codex_images)}장",
+            "currentStage": f"Codex 입력 작성 완료 · 상품 {len(products)}개 · 채널 {len(channels)}개 · 작업 {len(work_items)}개({chunk_size}개씩 분할) · 이미지 {total_codex_images}장",
             "updatedAt": now_text(),
         })
         write_json(job_path, job)
@@ -4012,10 +4099,15 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
         shared_tail: list[str] = []
         shared_output_lines = [0]
 
-        def run_codex_group(group_label: str, group_channels: list[str]) -> tuple[str, Path]:
-            gdir = group_work_dirs[group_label]
-            input_name = "keyword_input.json"
-            output_name = "keyword_result.json"
+        def run_codex_group(work_item: dict) -> tuple[str, list[str], list[dict], Path]:
+            group_label = text_value(work_item.get("groupLabel"))
+            work_label = text_value(work_item.get("workLabel"))
+            group_channels = work_item.get("channels") or []
+            chunk_products = work_item.get("products") or []
+            chunk_images = work_item.get("images") or []
+            gdir = Path(work_item.get("workDir"))
+            input_name = text_value(work_item.get("inputName")) or "keyword_input.json"
+            output_name = text_value(work_item.get("outputName")) or "keyword_result.json"
             image_instruction = (
                 f"`prompt.md` 지시서를 먼저 읽고 `{input_name}`의 상품/채널 데이터를 분석해서 "
                 f"`{output_name}`을 스키마에 맞는 JSON으로 작성해. "
@@ -4034,15 +4126,15 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
                 "-C", str(gdir),
             ]
             selected_images = []
-            if all_codex_images and len(products) <= 8:
-                selected_images = append_codex_images_with_budget(cmd, all_codex_images, image_instruction)
+            if chunk_images:
+                selected_images = append_codex_images_with_budget(cmd, chunk_images, image_instruction)
             instruction = image_instruction if selected_images else text_instruction
             for img_path in selected_images:
                 cmd.extend(["-i", img_path])
             if selected_images:
                 cmd.append("--")
             cmd.append(instruction)
-            group_log_path = JOBS_ROOT / f"{job_id}_{group_label}.log"
+            group_log_path = JOBS_ROOT / f"{job_id}_{work_label}.log"
             stdout_done = object()
 
             def read_stdout(stream, oq: queue.Queue) -> None:
@@ -4053,8 +4145,9 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
                     oq.put(stdout_done)
 
             with group_log_path.open("w", encoding="utf-8", errors="replace") as glog:
-                glog.write(f"[{now_text()}] START keyword group {group_label} channels={group_channels}\n")
-                glog.write(f"images attached: {len(selected_images)} / {len(all_codex_images)} candidates, command chars ~= {estimate_command_line_chars(cmd)}\n")
+                glog.write(f"[{now_text()}] START keyword group {work_label} channels={group_channels}\n")
+                glog.write(f"products: {len(chunk_products)} / chunk {work_item.get('chunkIndex')}/{work_item.get('chunkTotal')}\n")
+                glog.write(f"images attached: {len(selected_images)} / {len(chunk_images)} candidates, command chars ~= {estimate_command_line_chars(cmd)}\n")
                 glog.write(" ".join(f'"{p}"' if " " in p else p for p in cmd) + "\n\n")
                 process = subprocess.Popen(
                     cmd, cwd=str(gdir),
@@ -4062,7 +4155,8 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
                     text=True, encoding="utf-8", errors="replace",
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
-                proc_key = f"{job_id}_{group_label}"
+                proc_key = f"{job_id}_{work_label}"
+                register_active_process(job_id, process)
                 register_active_process(proc_key, process)
                 assert process.stdout is not None
                 oq: queue.Queue = queue.Queue()
@@ -4070,6 +4164,9 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
                 reader.start()
                 reader_done = False
                 started_at = time.time()
+                last_activity = started_at
+                result_path = gdir / output_name
+                last_result_signature: tuple[float, int] | None = None
                 last_hb = 0.0
                 try:
                     while True:
@@ -4086,12 +4183,24 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
                             clean = str(item).rstrip("\n")
                             glog.write(clean + "\n")
                             glog.flush()
+                            last_activity = time.time()
                             with job_lock:
                                 shared_output_lines[0] += 1
                                 shared_tail.append(clean)
                                 while len(shared_tail) > 20:
                                     shared_tail.pop(0)
                         now_ts = time.time()
+                        if result_path.exists():
+                            stat = result_path.stat()
+                            signature = (stat.st_mtime, stat.st_size)
+                            if signature != last_result_signature:
+                                last_result_signature = signature
+                                last_activity = now_ts
+                        if process.poll() is None and now_ts - last_activity > stall_seconds:
+                            glog.write(f"\n[{now_text()}] STALLED no output/result change for {stall_seconds}s\n")
+                            glog.flush()
+                            stop_process_tree(process)
+                            raise RuntimeError(f"codex group {work_label} stalled for {stall_seconds}s")
                         if now_ts - last_hb >= 2.0:
                             elapsed = int(now_ts - started_at)
                             with job_lock:
@@ -4101,7 +4210,7 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
                                     "status": "running", "updatedAt": now_text(),
                                     "tail": list(shared_tail),
                                     "progressPercent": progress,
-                                    "currentStage": f"Codex AI 생성 중 ({group_label}마켓 {len(group_channels)}채널)",
+                                    "currentStage": f"Codex AI 생성 중 ({work_label} · {len(chunk_products)}개 · {len(group_channels)}채널)",
                                 })
                                 write_json(job_path, current)
                             last_hb = now_ts
@@ -4109,39 +4218,39 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
                             break
                     exit_code = process.wait()
                 finally:
+                    unregister_active_process(job_id, process)
                     unregister_active_process(proc_key, process)
             if exit_code != 0:
-                raise RuntimeError(f"codex group {group_label} failed (exit {exit_code})")
+                raise RuntimeError(f"codex group {work_label} failed (exit {exit_code})")
             result_path = gdir / output_name
             if not result_path.exists():
-                raise FileNotFoundError(f"{output_name} not written for group {group_label}")
-            return group_label, result_path
+                raise FileNotFoundError(f"{output_name} not written for group {work_label}")
+            return group_label, group_channels, chunk_products, result_path
 
         with log_path.open("w", encoding="utf-8", errors="replace") as log:
-            log.write(f"[{now_text()}] START keywordGenerate (parallel {len(channel_groups)} groups)\n")
+            log.write(f"[{now_text()}] START keywordGenerate (work items {len(work_items)}, max workers {KEYWORD_CODEX_MAX_WORKERS})\n")
             log.write(f"seed: {seed_path}\n")
-            log.write(f"products: {len(products)} / channels: {len(channels)}\n")
-            for gl, gc in channel_groups:
-                log.write(f"  group {gl}: {gc}\n")
+            log.write(f"products: {len(products)} / channels: {len(channels)} / chunkSize: {chunk_size} / stallSeconds: {stall_seconds}\n")
+            for item in work_items:
+                log.write(f"  work {item['workLabel']}: {len(item['products'])} products, channels={item['channels']}\n")
             log.flush()
 
-        if len(channel_groups) >= 2:
-            with ThreadPoolExecutor(max_workers=len(channel_groups)) as pool:
+        if len(work_items) >= 2:
+            with ThreadPoolExecutor(max_workers=min(KEYWORD_CODEX_MAX_WORKERS, len(work_items))) as pool:
                 futures = {
-                    pool.submit(run_codex_group, gl, gc): gl
-                    for gl, gc in channel_groups
+                    pool.submit(run_codex_group, item): item["workLabel"]
+                    for item in work_items
                 }
-                group_results: list[tuple[str, Path]] = []
+                group_results: list[tuple[str, list[str], list[dict], Path]] = []
                 for future in as_completed(futures):
                     group_results.append(future.result())
         else:
-            group_results = [run_codex_group(*channel_groups[0])]
+            group_results = [run_codex_group(work_items[0])]
 
         merged_keyword_result: dict = {"products": []}
-        for group_label, result_path in group_results:
-            _, group_channels = next((gl, gc) for gl, gc in channel_groups if gl == group_label)
+        for group_label, group_channels, chunk_products, result_path in group_results:
             raw = read_json(result_path, {})
-            validated = validate_keyword_result(raw, products, group_channels)
+            validated = validate_keyword_result(raw, chunk_products, group_channels)
             for product_result in validated.get("products", []):
                 gs = text_value(product_result.get("gs"))
                 existing = next((p for p in merged_keyword_result["products"] if text_value(p.get("gs")) == gs), None)
@@ -4169,11 +4278,12 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
             "tail": shared_tail[-20:],
             "result": {
                 "seedPath": str(seed_path),
-                "keywordResultPath": str(group_results[0][1]) if group_results else "",
+                "keywordResultPath": str(group_results[0][3]) if group_results else "",
                 "products": generated_products,
                 "channels": channels,
                 "generatedChannels": generated_channels,
-                "parallelGroups": len(channel_groups),
+                "parallelGroups": len(group_results),
+                "keywordProductChunkSize": chunk_size,
             },
         })
         write_json(job_path, job)
@@ -4296,6 +4406,8 @@ def run_automation_job(job_id: str, payload: dict) -> None:
                     "channels": channels,
                     "listingImageSettings": settings,
                     "concurrency": 50,
+                    "keywordProductChunkSize": KEYWORD_PRODUCT_CHUNK_SIZE,
+                    "keywordStallSeconds": KEYWORD_CODEX_STALL_SECONDS,
                 })
                 keyword_job = read_json(keyword_job_path, {})
                 if keyword_job.get("status") != "completed":
