@@ -1,0 +1,51 @@
+# Local data and credentials
+/data/
+/key/
+/KEYS_USED.md
+
+# App/runtime data
+/webocrcludev2/data/
+/ProductManager/data/
+/backend/data/
+/backend/app_settings.json
+/backend/cafe24_price_upload_data.json
+/backend/cafe24_upload_config.txt
+**/.localhost.pid
+**/*.log
+**/*.out.log
+**/*.err.log
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.venv/
+**/venv/
+
+# .NET build output
+**/bin/
+**/obj/
+**/TestResults/
+
+# Node/frontend dependencies and build output
+**/node_modules/
+**/dist/
+**/build/
+**/.vite/
+
+# Environment and secrets
+**/.env
+**/.env.*
+**/*token*.json
+**/*secret*
+**/*credential*
+
+# Generated/import/export files
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+**/*.csv
+**/*.xlsx
+**/*.xls
+**/*.zip
+**/*.tmp

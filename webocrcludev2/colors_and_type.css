@@ -1,0 +1,176 @@
+/* ─────────────────────────────────────────────────────────────
+   WEBOCRV2 — colors & type
+   Quizlet-referenced palette + Hurme No.2 (Manrope fallback).
+   ───────────────────────────────────────────────────────────── */
+
+/* Hurme No.2 webfont is the brand spec. Until a licensed copy is
+   provided, Manrope is loaded as the visual stand-in — geometric
+   sans, near-identical x-height and stroke contrast.            */
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap");
+
+:root {
+  /* ── Brand palette ──────────────────────────────────────── */
+  --color-stormcloud-ink:   #282e3e;   /* primary text, deep ink     */
+  --color-deep-slate:       #2e3856;   /* body text, muted contrast  */
+  --color-slate-text:       #586380;   /* secondary text             */
+  --color-light-slate:      #939bb4;   /* inactive, subtle           */
+  --color-ash-border:       #d9dde8;   /* dividers, input borders    */
+  --color-page-background:  #f6f7fb;   /* canvas                     */
+  --color-pure-white:       #ffffff;   /* cards, panels              */
+
+  --color-quizlet-violet:   #4255ff;   /* primary CTA, links         */
+  --color-night-violet:     #423ed8;   /* darker violet accent       */
+  --color-sky-study:        #98e3ff;   /* fresh accent / external    */
+  --color-signal-red:       #ff5b6b;   /* failure / urgent accent    */
+  --color-flashcard-pink:   #ff5b6b;   /* alias \u2014 retired pink, now red */
+  --color-practice-orange:  #ffc38c;   /* warm accent / review       */
+
+  /* ── Semantic foreground / background aliases ───────────── */
+  --fg-1:           var(--color-stormcloud-ink);
+  --fg-2:           var(--color-deep-slate);
+  --fg-3:           var(--color-slate-text);
+  --fg-4:           var(--color-light-slate);
+  --fg-on-violet:   var(--color-pure-white);
+  --fg-link:        var(--color-quizlet-violet);
+
+  --bg-canvas:      var(--color-page-background);
+  --bg-surface:     var(--color-pure-white);
+  --bg-sunken:      var(--color-page-background);
+
+  --border-subtle:  var(--color-ash-border);
+  --border-strong:  var(--color-light-slate);
+  --border-focus:   var(--color-quizlet-violet);
+
+  /* ── Status / state colour pairs (bg / fg) ──────────────── */
+  --status-uploaded-bg:  #4255ff;  --status-uploaded-fg:  #ffffff;
+  --status-failed-bg:    #ff5b6b;  --status-failed-fg:    #ffffff;
+  --status-external-bg:  #98e3ff;  --status-external-fg:  #2e3856;
+  --status-excel-bg:     #ffc38c;  --status-excel-fg:     #2e3856;
+  --status-targeted-bg:  #ffffff;  --status-targeted-fg:  #4255ff;   /* + 1px violet border */
+  --status-review-bg:    #ffc38c;  --status-review-fg:    #2e3856;
+  --status-missing-bg:   #2e3856;  --status-missing-fg:   #ffffff;
+  --status-muted-bg:     #f6f7fb;  --status-muted-fg:     #586380;
+
+  /* ── Type families ──────────────────────────────────────── */
+  --font-sans: 'hurme_no2-webfont', 'Manrope', ui-sans-serif, system-ui,
+               -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+               "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo,
+               Consolas, monospace;
+
+  /* ── Type scale (raw tokens) ────────────────────────────── */
+  --text-caption:     12px;  --leading-caption:     1.5;
+  --text-body-sm:     14px;  --leading-body-sm:     1.43;
+  --text-body:        16px;  --leading-body:        1.5;
+  --text-subheading:  20px;  --leading-subheading:  1.25;
+  --text-heading:     24px;  --leading-heading:     1.33;
+  --text-heading-lg:  32px;  --leading-heading-lg:  1.27;
+  --text-display:     44px;  --leading-display:     1.25;
+
+  --font-weight-regular:  400;
+  --font-weight-medium:   500;
+  --font-weight-semibold: 600;
+  --font-weight-bold:     700;
+
+  /* ── Spacing / radius / shadow ──────────────────────────── */
+  --spacing-4:  4px;   --spacing-8:  8px;   --spacing-12: 12px;
+  --spacing-16: 16px;  --spacing-24: 24px;  --spacing-32: 32px;
+  --spacing-40: 40px;  --spacing-48: 48px;  --spacing-64: 64px;
+
+  --radius-sm:    2px;
+  --radius-md:    4px;     /* inputs, cells, status pills */
+  --radius-lg:    8px;     /* cards, panels               */
+  --radius-3xl:   24px;
+  --radius-full:  200px;   /* CTA buttons, chips          */
+
+  --shadow-sm:     rgba(40, 46, 62, 0.10) 0px 2px  4px 0px;
+  --shadow-md:     rgba(40, 46, 62, 0.10) 0px 4px 16px 0px;
+  --shadow-subtle: rgba(0,  0,  0,  0.30) 0px 0px  1px 0px inset;
+  --shadow-focus:  rgba(66, 85, 255, 0.13) 0px 0px  0px 4px;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Semantic type roles — use these in product code.
+   ───────────────────────────────────────────────────────────── */
+.t-display,
+h1.t-display {
+  font-family: var(--font-sans);
+  font-size: var(--text-display);
+  line-height: var(--leading-display);
+  font-weight: var(--font-weight-bold);
+  color: var(--fg-1);
+  letter-spacing: -0.01em;
+}
+
+.t-h1, h1 {
+  font-family: var(--font-sans);
+  font-size: var(--text-heading-lg);
+  line-height: var(--leading-heading-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--fg-1);
+}
+
+.t-h2, h2 {
+  font-family: var(--font-sans);
+  font-size: var(--text-heading);
+  line-height: var(--leading-heading);
+  font-weight: var(--font-weight-bold);
+  color: var(--fg-1);
+}
+
+.t-h3, h3 {
+  font-family: var(--font-sans);
+  font-size: var(--text-subheading);
+  line-height: var(--leading-subheading);
+  font-weight: var(--font-weight-semibold);
+  color: var(--fg-1);
+}
+
+.t-body, p {
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  font-weight: var(--font-weight-regular);
+  color: var(--fg-2);
+}
+
+.t-body-sm {
+  font-family: var(--font-sans);
+  font-size: var(--text-body-sm);
+  line-height: var(--leading-body-sm);
+  font-weight: var(--font-weight-regular);
+  color: var(--fg-2);
+}
+
+.t-label {
+  font-family: var(--font-sans);
+  font-size: var(--text-body-sm);
+  line-height: var(--leading-body-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--fg-2);
+}
+
+.t-caption {
+  font-family: var(--font-sans);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.02em;
+  color: var(--fg-3);
+}
+
+.t-eyebrow {
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-4);
+  color: var(--fg-3);
+}
+
+.t-mono, code, kbd, samp {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  color: var(--fg-1);
+}

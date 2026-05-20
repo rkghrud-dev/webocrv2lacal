@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+data/*.db
+data/*.xlsx
+data/result_uploads/
+exports/*.csv
+.env
+navertagv2/node_modules/
+navertagv2/data/
+navertagv2/*.log

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="aurora" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#423ed8"></stop>
+      <stop offset="35%" stop-color="#4255ff"></stop>
+      <stop offset="65%" stop-color="#98e3ff"></stop>
+      <stop offset="100%" stop-color="#eeaaff"></stop>
+    </linearGradient>
+    <radialGradient id="marble" cx="30%" cy="20%" r="80%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity=".55"></stop>
+      <stop offset="45%" stop-color="#ffffff" stop-opacity="0"></stop>
+      <stop offset="100%" stop-color="#282e3e" stop-opacity=".18"></stop>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#aurora)"></rect>
+  <rect width="64" height="64" rx="14" fill="url(#marble)"></rect>
+  <text x="32" y="42" text-anchor="middle" font-family="Manrope, ui-sans-serif, system-ui" font-weight="800" font-size="24" fill="#ffffff" letter-spacing="-.5">AI</text>
+</svg>

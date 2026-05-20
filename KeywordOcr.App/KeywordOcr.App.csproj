@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>KeywordOcr.App</RootNamespace>
+    <AssemblyName>KeywordOcr</AssemblyName>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <ApplicationIcon>Assets\leo-ash.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="BCrypt.Net-Next" Version="4.1.0" />
+    <PackageReference Include="ClosedXML" Version="0.104.2" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.11" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\leo-ash.ico" />
+    <Content Include="Bridge\**\*.*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\backend\app\**\*.*" LinkBase="backend\app" CopyToPublishDirectory="PreserveNewest" Exclude="..\backend\**\__pycache__\**;..\backend\**\*.pyc;..\backend\**\*.pyo" />
+    <Content Include="..\backend\data\**\*.*" LinkBase="backend\data" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\backend\prompts\**\*.*" LinkBase="backend\prompts" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\tools\marketplus-category-helper\**\*.*" LinkBase="tools\marketplus-category-helper" CopyToPublishDirectory="PreserveNewest" Exclude="..\tools\marketplus-category-helper\marketplus_category_map_store.json;..\tools\marketplus-category-helper\**\__pycache__\**;..\tools\marketplus-category-helper\**\*.pyc;..\tools\marketplus-category-helper\**\*.pyo" />
+  </ItemGroup>
+</Project>
