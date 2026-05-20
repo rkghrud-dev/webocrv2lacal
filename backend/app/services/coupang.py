@@ -343,54 +343,170 @@ def build_notice_content(category_meta: dict, row: dict | None = None, product_n
     notices = category_meta.get("data", {}).get("noticeCategories", [])
     if not notices:
         return []
-    notice = notices[0]
-    notice_name = notice.get("noticeCategoryName", "")
-    details = notice.get("noticeCategoryDetailNames", [])
     row = row or {}
     options = options or []
     source_text = " ".join(
         str(x or "")
         for x in (product_name, row.get("OCR요약"), row.get("상품 상세설명"), row.get("상세설명"))
     )
-    colors = _extract_notice_colors(options)
-    material = _extract_notice_material(source_text)
-    size = _extract_notice_size(source_text)
+    notice = _select_notice_category(notices, source_text)
+    notice_name = notice.get("noticeCategoryName", "")
+    details = notice.get("noticeCategoryDetailNames", [])
+    fields = _build_notice_fields(row, product_name, options, source_text)
     return [
         {
             "noticeCategoryName": notice_name,
             "noticeCategoryDetailName": d.get("noticeCategoryDetailName", ""),
-            "content": _build_notice_detail_content(d.get("noticeCategoryDetailName", ""), product_name, colors, material, size),
+            "content": _build_notice_detail_content(d.get("noticeCategoryDetailName", ""), fields),
         }
         for d in details
     ]
 
 
-def _build_notice_detail_content(detail_name: str, product_name: str, colors: str, material: str, size: str) -> str:
+def _select_notice_category(notices: list[dict], source_text: str) -> dict:
+    best = notices[0]
+    best_score = -999
+    for notice in notices:
+        notice_name = str(notice.get("noticeCategoryName", ""))
+        details_text = " ".join(str(item.get("noticeCategoryDetailName", "")) for item in notice.get("noticeCategoryDetailNames", []))
+        score = 0
+        if re.search(r"깔창|인솔|신발|구두|운동화|슬리퍼|부츠", source_text) and re.search(r"신발|구두", notice_name):
+            score += 80
+        if re.search(r"가방|백팩|파우치|숄더백|토트백", source_text) and "가방" in notice_name:
+            score += 80
+        if re.search(r"의류|티셔츠|셔츠|바지|자켓|재킷|점퍼|원피스|스커트", source_text) and "의류" in notice_name:
+            score += 80
+        if "기타" in notice_name:
+            score -= 10
+        if any(token in details_text for token in ("재질", "색상", "크기")):
+            score += 5
+        if score > best_score:
+            best = notice
+            best_score = score
+    return best
+
+
+def _build_notice_fields(row: dict, product_name: str, options: list[dict], source_text: str) -> dict:
+    json_fields = _extract_notice_json_fields(
+        row.get("네이버상품정보고시") or row.get("상품정보제공고시") or row.get("naverProvidedNotice") or ""
+    )
+    colors = _extract_notice_colors(options)
+    return {
+        "product_name": product_name,
+        "model_name": _first_notice_value(json_fields.get("modelName"), _extract_gs_from_text(source_text), product_name),
+        "material": _first_notice_value(json_fields.get("material"), _extract_labeled_notice_value(source_text, ["소재", "재질", "재료", "원단"]), _extract_notice_material(source_text)),
+        "color": _first_notice_value(json_fields.get("color"), _extract_labeled_notice_value(source_text, ["색상", "컬러", "색깔"]), colors),
+        "size": _first_notice_value(json_fields.get("size"), _extract_labeled_notice_value(source_text, ["사이즈", "크기", "규격", "치수", "중량"]), _extract_notice_size(source_text)),
+        "quantity": _first_notice_value(json_fields.get("quantity"), _extract_labeled_notice_value(source_text, ["수량", "구성수량"]), "1개"),
+        "manufacturer": _first_notice_value(json_fields.get("manufacturer"), _extract_labeled_notice_value(source_text, ["제조사", "제조자", "제조원"])),
+        "importer": _first_notice_value(json_fields.get("importer"), _extract_labeled_notice_value(source_text, ["수입사", "수입원", "수입자"])),
+        "origin": _first_notice_value(json_fields.get("origin"), _extract_labeled_notice_value(source_text, ["제조국", "원산지"]), "중국"),
+        "customer_service": _first_notice_value(json_fields.get("customerServicePhoneNumber"), _extract_labeled_notice_value(source_text, ["A/S", "AS", "고객센터", "소비자상담"]), "홈런마켓 / 010-2324-8352"),
+        "components": _first_notice_value(_extract_labeled_notice_value(source_text, ["제품 구성", "제품구성", "구성품", "구성"]), "본품 1개"),
+    }
+
+
+def _build_notice_detail_content(detail_name: str, fields: dict) -> str:
     if "품명" in detail_name or "모델명" in detail_name:
-        return product_name
+        return f"{fields['product_name']} / {fields['model_name']}" if fields.get("model_name") else fields["product_name"]
     if "KC" in detail_name or "인증" in detail_name or "허가" in detail_name:
         return "해당없음"
     if "크기" in detail_name or "중량" in detail_name:
-        return f"{size} / 상세페이지 참조" if size else "상세페이지 참조"
+        return fields.get("size") or "상세페이지 참조"
     if "색상" in detail_name:
-        return colors or "상세페이지 참조"
-    if "재질" in detail_name:
-        return material or "상세페이지 참조"
+        return fields.get("color") or "상세페이지 참조"
+    if "재질" in detail_name or "소재" in detail_name or "원단" in detail_name:
+        return fields.get("material") or "상세페이지 참조"
     if "제품 구성" in detail_name or "제품구성" in detail_name:
-        return "본품 1개"
+        return fields.get("components") or "본품 1개"
+    if "수량" in detail_name:
+        return fields.get("quantity") or "1개"
     if "출시" in detail_name:
         return "상세페이지 참조"
     if "제조자" in detail_name or "수입자" in detail_name:
-        return "제조자: 상세페이지 참조 / 수입자: 홈런마켓"
+        maker = fields.get("manufacturer") or "상세페이지 참조"
+        importer = fields.get("importer") or "홈런마켓"
+        return f"제조자: {maker} / 수입자: {importer}"
     if "제조국" in detail_name or "원산지" in detail_name:
-        return "중국"
+        return fields.get("origin") or "중국"
     if "세부 사양" in detail_name:
         return "상세페이지 참조"
     if "품질보증" in detail_name:
         return "소비자분쟁해결기준에 따름"
     if "A/S" in detail_name or "소비자상담" in detail_name:
-        return "홈런마켓 / 010-2324-8352"
+        return fields.get("customer_service") or "홈런마켓 / 010-2324-8352"
     return "상세페이지 참조"
+
+
+def _extract_notice_json_fields(raw: object) -> dict:
+    if isinstance(raw, dict):
+        payload = raw
+    else:
+        text = str(raw or "").strip()
+        if not text:
+            return {}
+        try:
+            payload = json.loads(text)
+        except Exception:
+            return {}
+    if isinstance(payload.get("productInfoProvidedNotice"), dict):
+        payload = payload["productInfoProvidedNotice"]
+    out: dict[str, str] = {}
+    for value in payload.values():
+        if not isinstance(value, dict):
+            continue
+        for key, inner in value.items():
+            cleaned = _clean_notice_value(inner)
+            if cleaned and cleaned not in {"상품상세 참조", "상세페이지 참조"}:
+                out[key] = cleaned
+    return out
+
+
+def _extract_labeled_notice_value(source_text: str, labels: list[str]) -> str:
+    if not source_text or not labels:
+        return ""
+    label_pattern = "|".join(re.escape(label) for label in labels)
+    stop_pattern = r"소재|재질|재료|원단|수량|구성수량|색상|컬러|색깔|사이즈|크기|규격|치수|중량|제조사|제조자|제조원|수입사|수입원|수입자|제조국|원산지|A/S|AS|고객센터|소비자상담|제품 구성|제품구성|구성품|구성"
+    joined = re.sub(r"<[^>]+>", " ", source_text)
+    joined = re.sub(r"\s+", " ", joined).strip()
+    match = re.search(
+        rf"(?:^|\s)(?:{label_pattern})\s*[:：]?\s*(.+?)(?=\s+(?:{stop_pattern})\s*[:：]?|\s+홈런마켓\b|\s+급배송\b|$)",
+        joined,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    value = _clean_notice_value(match.group(1))
+    return "" if _notice_is_noise(value) else value
+
+
+def _clean_notice_value(value: object) -> str:
+    text = re.sub(r"[{}\"`]+", " ", str(value or ""))
+    text = re.sub(r"\s+", " ", text).strip(" ,./|·:-")
+    text = re.split(
+        r"\s+(?:홈런마켓|급배송|평일|택배사|구매대행|국내|모든\s*제품|상품/대량구매|대량구매|퀵서비스|방문수령)\b",
+        text,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    return text.strip(" ,./|·:-")
+
+
+def _notice_is_noise(value: str) -> bool:
+    return not value or bool(re.search(r"^(?:high|bullet|advantage|product\s*profile|size|in/mm|on|off|zero|\d{1,4}|\d{1,4}\s*mm)$", value, re.IGNORECASE))
+
+
+def _first_notice_value(*values: object) -> str:
+    for value in values:
+        cleaned = _clean_notice_value(value)
+        if cleaned and not _notice_is_noise(cleaned):
+            return cleaned
+    return ""
+
+
+def _extract_gs_from_text(value: str) -> str:
+    match = re.search(r"GS\d{7}[A-Z0-9]*", value or "", re.IGNORECASE)
+    return match.group(0).upper() if match else ""
 
 
 def _extract_notice_colors(options: list[dict]) -> str:

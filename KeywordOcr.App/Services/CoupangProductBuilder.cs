@@ -509,12 +509,9 @@ public static class CoupangProductBuilder
         if (!data.TryGetProperty("noticeCategories", out var notices)) return arr;
         if (notices.GetArrayLength() == 0) return arr;
 
-        var notice = notices[0];
+        var notice = SelectNoticeCategory(notices, row, productName);
         var noticeName = notice.GetProperty("noticeCategoryName").GetString() ?? "";
-        var sourceText = string.Join(" ", productName, GetStr(row, "OCR요약"), GetStr(row, "상품 상세설명"), GetStr(row, "상세설명"));
-        var colors = ExtractOptionValues(options);
-        var material = ExtractMaterial(sourceText);
-        var size = ExtractSize(sourceText);
+        var noticeFields = BuildNoticeFieldContext(row, productName, options);
 
         if (notice.TryGetProperty("noticeCategoryDetailNames", out var details))
         {
@@ -525,45 +522,251 @@ public static class CoupangProductBuilder
                 {
                     ["noticeCategoryName"] = noticeName,
                     ["noticeCategoryDetailName"] = detailName,
-                    ["content"] = BuildNoticeDetailContent(detailName, productName, colors, material, size),
+                    ["content"] = BuildNoticeDetailContent(detailName, noticeFields),
                 });
             }
         }
         return arr;
     }
 
+    private sealed record NoticeFieldContext(
+        string ProductName,
+        string ModelName,
+        string Material,
+        string Color,
+        string Size,
+        string Quantity,
+        string Manufacturer,
+        string Importer,
+        string Origin,
+        string CustomerService,
+        string Components,
+        string SourceText);
+
+    private static JsonElement SelectNoticeCategory(
+        JsonElement notices,
+        Dictionary<string, object?> row,
+        string productName)
+    {
+        var sourceText = string.Join(" ", productName, GetStr(row, "OCR요약"), GetStr(row, "상품 상세설명"), GetStr(row, "상세설명"));
+        var best = notices[0];
+        var bestScore = int.MinValue;
+
+        foreach (var notice in notices.EnumerateArray())
+        {
+            var noticeName = notice.TryGetProperty("noticeCategoryName", out var nameProp) ? nameProp.GetString() ?? "" : "";
+            var detailsText = "";
+            if (notice.TryGetProperty("noticeCategoryDetailNames", out var details))
+            {
+                detailsText = string.Join(" ", details.EnumerateArray()
+                    .Select(detail => detail.TryGetProperty("noticeCategoryDetailName", out var detailName) ? detailName.GetString() ?? "" : ""));
+            }
+
+            var score = 0;
+            if (Regex.IsMatch(sourceText, "깔창|인솔|신발|구두|운동화|슬리퍼|부츠") && Regex.IsMatch(noticeName, "신발|구두"))
+                score += 80;
+            if (Regex.IsMatch(sourceText, "가방|백팩|파우치|숄더백|토트백") && noticeName.Contains("가방"))
+                score += 80;
+            if (Regex.IsMatch(sourceText, "의류|티셔츠|셔츠|바지|자켓|재킷|점퍼|원피스|스커트") && noticeName.Contains("의류"))
+                score += 80;
+            if (noticeName.Contains("기타"))
+                score -= 10;
+            if (detailsText.Contains("재질") || detailsText.Contains("색상") || detailsText.Contains("크기"))
+                score += 5;
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                best = notice;
+            }
+        }
+
+        return best;
+    }
+
+    private static NoticeFieldContext BuildNoticeFieldContext(
+        Dictionary<string, object?> row,
+        string productName,
+        IReadOnlyList<OptionItem> options)
+    {
+        var sourceText = string.Join(" ",
+            productName,
+            GetStr(row, "OCR요약"),
+            GetStr(row, "상품 상세설명"),
+            GetStr(row, "상세설명"));
+
+        var jsonFields = ExtractNoticeJsonFields(GetStr(row, "네이버상품정보고시")
+            .OrIfEmpty(GetStr(row, "상품정보제공고시"))
+            .OrIfEmpty(GetStr(row, "naverProvidedNotice")));
+
+        var optionValues = ExtractOptionValues(options);
+        var material = FirstNonEmpty(
+            jsonFields.GetValueOrDefault("material"),
+            ExtractLabeledNoticeValue(sourceText, "소재", "재질", "재료", "원단"),
+            ExtractMaterial(sourceText));
+        var color = FirstNonEmpty(
+            jsonFields.GetValueOrDefault("color"),
+            ExtractLabeledNoticeValue(sourceText, "색상", "컬러", "색깔"),
+            optionValues);
+        var size = FirstNonEmpty(
+            jsonFields.GetValueOrDefault("size"),
+            ExtractLabeledNoticeValue(sourceText, "사이즈", "크기", "규격", "치수", "중량"),
+            ExtractSize(sourceText));
+        var manufacturer = FirstNonEmpty(
+            jsonFields.GetValueOrDefault("manufacturer"),
+            ExtractLabeledNoticeValue(sourceText, "제조사", "제조자", "제조원"));
+        var importer = FirstNonEmpty(
+            jsonFields.GetValueOrDefault("importer"),
+            ExtractLabeledNoticeValue(sourceText, "수입사", "수입원", "수입자"));
+        var origin = FirstNonEmpty(
+            jsonFields.GetValueOrDefault("origin"),
+            ExtractLabeledNoticeValue(sourceText, "제조국", "원산지"),
+            "중국");
+        var customerService = FirstNonEmpty(
+            jsonFields.GetValueOrDefault("customerServicePhoneNumber"),
+            ExtractLabeledNoticeValue(sourceText, "A/S", "AS", "고객센터", "소비자상담"),
+            "홈런마켓 / 010-2324-8352");
+
+        return new NoticeFieldContext(
+            productName,
+            FirstNonEmpty(jsonFields.GetValueOrDefault("modelName"), ExtractGsCodeFromText(sourceText), productName),
+            material,
+            color,
+            size,
+            FirstNonEmpty(jsonFields.GetValueOrDefault("quantity"), ExtractLabeledNoticeValue(sourceText, "수량", "구성수량"), "1개"),
+            manufacturer,
+            importer,
+            origin,
+            customerService,
+            FirstNonEmpty(ExtractLabeledNoticeValue(sourceText, "제품 구성", "제품구성", "구성품", "구성"), "본품 1개"),
+            sourceText);
+    }
+
+    private static Dictionary<string, string> ExtractNoticeJsonFields(string raw)
+    {
+        var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(raw))
+            return fields;
+
+        try
+        {
+            var node = JsonNode.Parse(raw);
+            var obj = node as JsonObject;
+            if (obj is null)
+                return fields;
+            if (obj["productInfoProvidedNotice"] is JsonObject nested)
+                obj = nested;
+
+            foreach (var (_, valueNode) in obj)
+            {
+                if (valueNode is not JsonObject detail)
+                    continue;
+                foreach (var (key, value) in detail)
+                {
+                    var text = CleanNoticeValue(value?.GetValue<object>()?.ToString() ?? "");
+                    if (!string.IsNullOrWhiteSpace(text) && text != "상품상세 참조" && text != "상세페이지 참조")
+                        fields[key] = text;
+                }
+            }
+        }
+        catch { }
+
+        return fields;
+    }
+
     private static string BuildNoticeDetailContent(
         string detailName,
-        string productName,
-        string colors,
-        string material,
-        string size)
+        NoticeFieldContext fields)
     {
         if (detailName.Contains("품명") || detailName.Contains("모델명"))
-            return productName;
+            return string.IsNullOrWhiteSpace(fields.ModelName)
+                ? fields.ProductName
+                : $"{fields.ProductName} / {fields.ModelName}";
         if (detailName.Contains("KC") || detailName.Contains("인증") || detailName.Contains("허가"))
             return "해당없음";
         if (detailName.Contains("크기") || detailName.Contains("중량"))
-            return string.IsNullOrEmpty(size) ? "상세페이지 참조" : $"{size} / 상세페이지 참조";
+            return string.IsNullOrEmpty(fields.Size) ? "상세페이지 참조" : fields.Size;
         if (detailName.Contains("색상"))
-            return string.IsNullOrEmpty(colors) ? "상세페이지 참조" : colors;
-        if (detailName.Contains("재질"))
-            return string.IsNullOrEmpty(material) ? "상세페이지 참조" : material;
+            return string.IsNullOrEmpty(fields.Color) ? "상세페이지 참조" : fields.Color;
+        if (detailName.Contains("재질") || detailName.Contains("소재") || detailName.Contains("원단"))
+            return string.IsNullOrEmpty(fields.Material) ? "상세페이지 참조" : fields.Material;
         if (detailName.Contains("제품 구성") || detailName.Contains("제품구성"))
-            return "본품 1개";
+            return fields.Components;
+        if (detailName.Contains("수량"))
+            return fields.Quantity;
         if (detailName.Contains("출시"))
             return "상세페이지 참조";
         if (detailName.Contains("제조자") || detailName.Contains("수입자"))
-            return "제조자: 상세페이지 참조 / 수입자: 홈런마켓";
+            return BuildManufacturerImporter(fields.Manufacturer, fields.Importer);
         if (detailName.Contains("제조국") || detailName.Contains("원산지"))
-            return "중국";
+            return string.IsNullOrEmpty(fields.Origin) ? "중국" : fields.Origin;
         if (detailName.Contains("세부 사양"))
             return "상세페이지 참조";
         if (detailName.Contains("품질보증"))
             return "소비자분쟁해결기준에 따름";
         if (detailName.Contains("A/S") || detailName.Contains("소비자상담"))
-            return "홈런마켓 / 010-2324-8352";
+            return fields.CustomerService;
         return "상세페이지 참조";
+    }
+
+    private static string BuildManufacturerImporter(string manufacturer, string importer)
+    {
+        var maker = string.IsNullOrWhiteSpace(manufacturer) ? "상세페이지 참조" : manufacturer;
+        var import = string.IsNullOrWhiteSpace(importer) ? "홈런마켓" : importer;
+        return $"제조자: {maker} / 수입자: {import}";
+    }
+
+    private static string ExtractLabeledNoticeValue(string sourceText, params string[] labels)
+    {
+        if (string.IsNullOrWhiteSpace(sourceText) || labels.Length == 0)
+            return "";
+
+        var labelPattern = string.Join("|", labels.Select(Regex.Escape));
+        var stopPattern = "소재|재질|재료|원단|수량|구성수량|색상|컬러|색깔|사이즈|크기|규격|치수|중량|제조사|제조자|제조원|수입사|수입원|수입자|제조국|원산지|A/S|AS|고객센터|소비자상담|제품 구성|제품구성|구성품|구성";
+        var joined = Regex.Replace(sourceText, @"<[^>]+>", " ");
+        joined = Regex.Replace(joined, @"\s+", " ").Trim();
+
+        var match = Regex.Match(
+            joined,
+            $@"(?:^|\s)(?:{labelPattern})\s*[:：]?\s*(.+?)(?=\s+(?:{stopPattern})\s*[:：]?|\s+홈런마켓\b|\s+급배송\b|$)",
+            RegexOptions.IgnoreCase);
+        if (!match.Success)
+            return "";
+
+        var value = CleanNoticeValue(match.Groups[1].Value);
+        return IsNoticeNoise(value) ? "" : value;
+    }
+
+    private static string CleanNoticeValue(string value)
+    {
+        var text = Regex.Replace(value ?? "", @"[{}""`]+", " ");
+        text = Regex.Replace(text, @"\s+", " ").Trim(" ,./|·:-".ToCharArray());
+        text = Regex.Split(text, @"\s+(?:홈런마켓|급배송|평일|택배사|구매대행|국내|모든\s*제품|상품/대량구매|대량구매|퀵서비스|방문수령)\b", RegexOptions.IgnoreCase)[0];
+        return text.Trim(" ,./|·:-".ToCharArray());
+    }
+
+    private static bool IsNoticeNoise(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+        return Regex.IsMatch(value, @"^(?:high|bullet|advantage|product\s*profile|size|in/mm|on|off|zero|\d{1,4}|\d{1,4}\s*mm)$", RegexOptions.IgnoreCase);
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            var cleaned = CleanNoticeValue(value ?? "");
+            if (!string.IsNullOrWhiteSpace(cleaned) && !IsNoticeNoise(cleaned))
+                return cleaned;
+        }
+        return "";
+    }
+
+    private static string ExtractGsCodeFromText(string value)
+    {
+        var match = Regex.Match(value ?? "", @"GS\d{7}[A-Z0-9]*", RegexOptions.IgnoreCase);
+        return match.Success ? match.Value.ToUpperInvariant() : "";
     }
 
     private static string ExtractOptionValues(IReadOnlyList<OptionItem> options)

@@ -494,9 +494,212 @@ function ProductManagerBrowser({ onImport, addLog }) {
 }
 
 
+function AutomationPrepWorkbench({ addLog, onSeedsChange }) {
+  const h = React.createElement;
+  const [pmAvailable, setPmAvailable] = useState(null);
+  const [dates, setDates] = useState([]);
+  const [selectedDate, setSelectedDate] = useState('');
+  const [suppliers, setSuppliers] = useState([]);
+  const [selectedSuppliers, setSelectedSuppliers] = useState(new Set());
+  const [batchSize, setBatchSize] = useState(20);
+  const [runCount, setRunCount] = useState(3);
+  const [sortOrder, setSortOrder] = useState('latest');
+  const [filterMode, setFilterMode] = useState('available');
+  const [accountScope, setAccountScope] = useState('전체');
+  const [job, setJob] = useState(null);
+  const [running, setRunning] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/pm/status').then(r => r.json()).then(d => {
+      setPmAvailable(d.available);
+      if (d.available) fetch('/api/pm/dates').then(r => r.json()).then(d2 => setDates(d2.dates || []));
+    }).catch(() => setPmAvailable(false));
+  }, []);
+
+  useEffect(() => {
+    if (!pmAvailable) return;
+    const url = selectedDate ? `/api/pm/suppliers?upload_date=${selectedDate}` : '/api/pm/suppliers';
+    fetch(url).then(r => r.json()).then(d => {
+      const next = d.suppliers || [];
+      setSuppliers(next);
+      setSelectedSuppliers(new Set(next.filter(s => s.available_skus > 0).map(s => s.supplier_code)));
+    });
+  }, [selectedDate, pmAvailable]);
+
+  const pollJob = (jobId) => {
+    window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/jobs/${jobId}`);
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok) throw new Error(payload?.error || `job ${response.status}`);
+        setJob(payload);
+        if (payload.status === 'completed') {
+          setRunning(false);
+          addLog(`자동화 완료: 시드 ${payload.result?.totalBatches || 0}개 생성`);
+          fetch('/api/seeds').then(r => r.json()).then(d => { if (d?.ok) onSeedsChange?.(d.seeds || []); }).catch(() => {});
+          return;
+        }
+        if (payload.status === 'failed' || payload.status === 'cancelled') {
+          setRunning(false);
+          addLog(`자동화 중단: ${payload.error || payload.currentStage || payload.status}`);
+          return;
+        }
+        pollJob(jobId);
+      } catch (error) {
+        setRunning(false);
+        addLog(`자동화 상태 조회 실패: ${error.message}`);
+      }
+    }, 2000);
+  };
+
+  const startAutomation = async () => {
+    if (!selectedSuppliers.size) {
+      addLog('자동화 시작 실패: 사업자를 1개 이상 선택하세요.');
+      return;
+    }
+    const channels = getScopedMarketKeys(DEFAULT_MARKET_SELECTION, accountScope);
+    const payload = {
+      suppliers: [...selectedSuppliers],
+      upload_date: selectedDate,
+      sort_order: sortOrder,
+      filter_mode: filterMode,
+      batchSize: Number(batchSize || 20),
+      runCount: Number(runCount || 1),
+      accountScope,
+      channels,
+      listingImageSettings: window.WEBOCR_PIPELINE?.buildListingImageSettings?.(DEFAULT_KEYWORD_OPTIONS) || {},
+    };
+    setRunning(true);
+    setJob({ status: 'queued', progressPercent: 1, currentStage: '자동화 작업 요청 중' });
+    addLog(`자동화 시작: ${payload.batchSize}개씩 ${payload.runCount}회, 최대 ${payload.batchSize * payload.runCount}개`);
+    try {
+      const response = await fetch('/api/automation-prepare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const nextJob = await response.json();
+      if (!response.ok || !nextJob?.ok) throw new Error(nextJob?.error || `automation ${response.status}`);
+      setJob(nextJob);
+      pollJob(nextJob.jobId);
+    } catch (error) {
+      setRunning(false);
+      setJob({ status: 'failed', error: error.message });
+      addLog(`자동화 요청 실패: ${error.message}`);
+    }
+  };
+
+  const stopAutomation = async () => {
+    if (!job?.jobId) return;
+    try {
+      await fetch('/api/job-stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId: job.jobId }),
+      });
+      setRunning(false);
+      addLog(`자동화 중지 요청: ${job.jobId}`);
+    } catch (error) {
+      addLog(`자동화 중지 실패: ${error.message}`);
+    }
+  };
+
+  const toggleSupplier = (code) => setSelectedSuppliers(prev => {
+    const next = new Set(prev);
+    next.has(code) ? next.delete(code) : next.add(code);
+    return next;
+  });
+
+  if (pmAvailable === null) return h('div', {className: 'surface pad-md'}, '연결 확인 중...');
+  if (!pmAvailable) return h('div', {className: 'surface pad-md color-muted'}, 'ProductManager DB를 찾을 수 없습니다.');
+
+  const expectedTotal = Number(batchSize || 0) * Number(runCount || 0);
+  const progress = Number(job?.progressPercent || 0);
+  return h('div', {className: 'automation-prep surface'},
+    h('div', {className: 'automation-grid'},
+      h('label', null, '날짜',
+        h('select', {className: 'pm-select', value: selectedDate, disabled: running, onChange: e => setSelectedDate(e.target.value)},
+          h('option', {value: ''}, '전체 날짜'),
+          ...dates.map(d => h('option', {key: d.upload_date, value: d.upload_date}, `${d.upload_date} (${d.total_count}건)`)),
+        ),
+      ),
+      h('label', null, '정렬',
+        h('select', {className: 'pm-select', value: sortOrder, disabled: running, onChange: e => setSortOrder(e.target.value)},
+          h('option', {value: 'latest'}, '최신순'),
+          h('option', {value: 'oldest'}, '오래된순'),
+          h('option', {value: 'random'}, '랜덤'),
+        ),
+      ),
+      h('label', null, '배치당 처리 개수',
+        h('input', {type: 'number', className: 'pm-input-sm automation-input', min: 1, max: 100, value: batchSize, disabled: running,
+          onChange: e => setBatchSize(Math.max(1, Math.min(100, Number(e.target.value || 20))))}),
+      ),
+      h('label', null, '반복 횟수',
+        h('input', {type: 'number', className: 'pm-input-sm automation-input', min: 1, max: 50, value: runCount, disabled: running,
+          onChange: e => setRunCount(Math.max(1, Math.min(50, Number(e.target.value || 1))))}),
+      ),
+      h('label', null, '대상',
+        h('select', {className: 'pm-select', value: filterMode, disabled: running, onChange: e => setFilterMode(e.target.value)},
+          h('option', {value: 'available'}, '미등록만'),
+          h('option', {value: 'all'}, '전체'),
+        ),
+      ),
+      h('label', null, '마켓 범위',
+        h('select', {className: 'pm-select', value: accountScope, disabled: running, onChange: e => setAccountScope(e.target.value)},
+          h('option', {value: '전체'}, 'A/B 전체'),
+          h('option', {value: 'A'}, 'A만'),
+          h('option', {value: 'B'}, 'B만'),
+        ),
+      ),
+    ),
+    h('div', {className: 'automation-suppliers'},
+      h('div', {className: 'automation-row-head'},
+        h('strong', null, `사업자 ${selectedSuppliers.size}개 선택`),
+        h('div', null,
+          h('button', {type: 'button', className: 'btn-ghost pm-sm-btn', disabled: running, onClick: () => setSelectedSuppliers(new Set(suppliers.map(s => s.supplier_code)))}, '전체'),
+          h('button', {type: 'button', className: 'btn-ghost pm-sm-btn', disabled: running, onClick: () => setSelectedSuppliers(new Set(suppliers.filter(s => s.available_skus > 0).map(s => s.supplier_code)))}, '미등록'),
+          h('button', {type: 'button', className: 'btn-ghost pm-sm-btn', disabled: running, onClick: () => setSelectedSuppliers(new Set())}, '해제'),
+        ),
+      ),
+      h('div', {className: 'automation-supplier-list'},
+        ...suppliers.map(s => h('label', {key: s.supplier_code, className: 'automation-supplier-item'},
+          h('input', {type: 'checkbox', checked: selectedSuppliers.has(s.supplier_code), disabled: running, onChange: () => toggleSupplier(s.supplier_code)}),
+          h('span', null, s.supplier_code),
+          h('small', null, `${s.available_skus}/${s.total_skus}`),
+        )),
+      ),
+    ),
+    h('div', {className: 'automation-summary'},
+      h('div', null, h('small', null, '예상 처리'), h('strong', null, `${expectedTotal.toLocaleString()}개`)),
+      h('div', null, h('small', null, '결과'), h('strong', null, `${Math.ceil(expectedTotal / Math.max(1, Number(batchSize || 1))).toLocaleString()}개 시드`)),
+      h('div', null, h('small', null, '상태'), h('strong', null, job?.currentStage || '대기')),
+      h('div', {className: 'automation-actions'},
+        running
+          ? h('button', {className: 'btn-ghost', type: 'button', onClick: stopAutomation}, '중지')
+          : h('button', {className: 'btn-aurora', type: 'button', onClick: startAutomation}, '자동화 시작'),
+      ),
+    ),
+    job && h('div', {className: 'automation-progress'},
+      h('div', {className: 'automation-progress-track'}, h('span', {style: {width: `${progress}%`}})),
+      h('div', {className: 'automation-job-meta'},
+        h('span', null, job.jobId ? `Job ${job.jobId}` : '대기'),
+        h('span', null, `${progress}%`),
+      ),
+      Array.isArray(job.batches) && job.batches.length > 0 && h('div', {className: 'automation-batches'},
+        ...job.batches.map(item => h('div', {key: item.index, className: 'automation-batch-item'},
+          h('span', null, `${item.index}회차`),
+          h('strong', null, item.seedFileName || '생성 중'),
+          h('small', null, `GS ${item.gsCount || 0}개`),
+        )),
+      ),
+    ),
+  );
+}
+
+
 function App() {
   const [stage, setStage]     = useState('drop');    // 'drop' | 'basic' | 'keyword' | 'upload' | 'matrix'
-  const [dropMode, setDropModeRaw] = useState(null);    // null | 'excel' | 'seed' | 'pm'
+  const [dropMode, setDropModeRaw] = useState(null);    // null | 'excel' | 'seed' | 'pm' | 'automation'
   const setDropMode = (mode) => {
     setDropModeRaw(prev => {
       if (mode && !prev) history.pushState({dropMode: mode}, '');
@@ -1449,6 +1652,12 @@ function App() {
                   <p>사업자별·날짜별 미등록 상품을 골라서 가져오기</p>
                   <div className="entry-card-formats"><span className="color-muted" style={{fontSize:'0.8rem'}}>DB 직접 연동</span></div>
                 </button>
+                <button type="button" className="entry-card" onClick={() => setDropMode('automation')}>
+                  <div className="entry-card-icon"><IconSync size={28}/></div>
+                  <h3>자동화 작업</h3>
+                  <p>지정 개수 단위로 업로드 직전 시드까지 자동 생성</p>
+                  <div className="entry-card-formats"><span className="color-muted" style={{fontSize:'0.8rem'}}>배치 저장</span></div>
+                </button>
               </div>
             </>
           )}
@@ -1508,6 +1717,20 @@ function App() {
                 </div>
               </div>
               <ProductManagerBrowser onImport={onPmImport} addLog={addLog}/>
+            </>
+          )}
+          {stage === 'drop' && dropMode === 'automation' && (
+            <>
+              <div className="section-head">
+                <div className="left">
+                  <span className="crumbs">STEP 01 · 원본 입력</span>
+                  <h2>자동화 작업</h2>
+                </div>
+                <div className="right">
+                  <GhostBtn onClick={() => history.back()}>← 돌아가기</GhostBtn>
+                </div>
+              </div>
+              <AutomationPrepWorkbench addLog={addLog} onSeedsChange={setSeedLibrary}/>
             </>
           )}
 

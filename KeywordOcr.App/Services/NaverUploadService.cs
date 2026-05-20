@@ -448,23 +448,7 @@ public sealed class NaverUploadService
                     ["content"] = "상세설명 참조",
                     ["plural"] = false,
                 },
-                ["productInfoProvidedNotice"] = new JsonObject
-                {
-                    ["productInfoProvidedNoticeType"] = "ETC",
-                    ["etc"] = new JsonObject
-                    {
-                        ["returnCostReason"] = "상세페이지 참조",
-                        ["noRefundReason"] = "상세페이지 참조",
-                        ["qualityAssuranceStandard"] = "상세페이지 참조",
-                        ["compensationProcedure"] = "상세페이지 참조",
-                        ["troubleShootingContents"] = "상세페이지 참조",
-                        ["itemName"] = "상세페이지 참조",
-                        ["modelName"] = "상세페이지 참조",
-                        ["certificateDetails"] = "해당 없음",
-                        ["manufacturer"] = "상세페이지 참조",
-                        ["customerServicePhoneNumber"] = "010-2324-8352",
-                    },
-                },
+                ["productInfoProvidedNotice"] = BuildProductInfoProvidedNotice(row, productName, sellerCode),
                 ["certificationTargetExcludeContent"] = new JsonObject
                 {
                     ["childCertifiedProductExclusionYn"] = true,
@@ -520,6 +504,122 @@ public sealed class NaverUploadService
                 ["storeKeepExclusiveProduct"] = false,
                 ["naverShoppingRegistration"] = true,
             },
+        };
+    }
+
+    private static JsonObject BuildProductInfoProvidedNotice(
+        IReadOnlyDictionary<string, object?> row,
+        string productName,
+        string sellerCode)
+    {
+        var raw = GetStr(row, "네이버상품정보고시")
+            .OrIfEmpty(GetStr(row, "상품정보제공고시"))
+            .OrIfEmpty(GetStr(row, "naverProvidedNotice"));
+
+        if (TryParseProvidedNotice(raw, out var providedNotice))
+            return providedNotice;
+
+        return BuildDefaultProvidedNotice(productName, sellerCode);
+    }
+
+    private static bool TryParseProvidedNotice(string raw, out JsonObject providedNotice)
+    {
+        providedNotice = new JsonObject();
+        if (string.IsNullOrWhiteSpace(raw))
+            return false;
+
+        try
+        {
+            var node = JsonNode.Parse(raw);
+            var obj = node as JsonObject;
+            if (obj is null)
+                return false;
+
+            if (obj["productInfoProvidedNotice"] is JsonObject nested)
+                obj = nested;
+
+            var type = obj["productInfoProvidedNoticeType"]?.GetValue<string>()?.Trim();
+            if (string.IsNullOrWhiteSpace(type))
+                return false;
+
+            var objectKey = ProvidedNoticeObjectKey(type);
+            if (string.IsNullOrWhiteSpace(objectKey) || obj[objectKey] is not JsonObject)
+                return false;
+
+            providedNotice = JsonNode.Parse(obj.ToJsonString())!.AsObject();
+            return true;
+        }
+        catch
+        {
+            providedNotice = new JsonObject();
+            return false;
+        }
+    }
+
+    private static JsonObject BuildDefaultProvidedNotice(string productName, string sellerCode)
+    {
+        var itemName = string.IsNullOrWhiteSpace(productName) ? "상품상세 참조" : productName;
+        var modelName = string.IsNullOrWhiteSpace(sellerCode) ? itemName : sellerCode;
+        return new JsonObject
+        {
+            ["productInfoProvidedNoticeType"] = "ETC",
+            ["etc"] = new JsonObject
+            {
+                ["returnCostReason"] = "0",
+                ["noRefundReason"] = "0",
+                ["qualityAssuranceStandard"] = "0",
+                ["compensationProcedure"] = "0",
+                ["troubleShootingContents"] = "0",
+                ["itemName"] = itemName,
+                ["modelName"] = modelName,
+                ["certificateDetails"] = "해당 없음",
+                ["manufacturer"] = "상품상세 참조",
+                ["customerServicePhoneNumber"] = "010-2324-8352",
+            },
+        };
+    }
+
+    private static string ProvidedNoticeObjectKey(string type)
+    {
+        return type.Trim().ToUpperInvariant() switch
+        {
+            "WEAR" => "wear",
+            "SHOES" => "shoes",
+            "BAG" => "bag",
+            "FASHION_ITEMS" => "fashionItems",
+            "SLEEPING_GEAR" => "sleepingGear",
+            "FURNITURE" => "furniture",
+            "IMAGE_APPLIANCES" => "imageAppliances",
+            "HOME_APPLIANCES" => "homeAppliances",
+            "SEASON_APPLIANCES" => "seasonAppliances",
+            "OFFICE_APPLIANCES" => "officeAppliances",
+            "OPTICS_APPLIANCES" => "opticsAppliances",
+            "MICROELECTRONICS" => "microElectronics",
+            "CELLPHONE" => "cellPhone",
+            "NAVIGATION" => "navigation",
+            "CAR_ARTICLES" => "carArticles",
+            "MEDICAL_APPLIANCES" => "medicalAppliances",
+            "KITCHEN_UTENSILS" => "kitchenUtensils",
+            "COSMETIC" => "cosmetic",
+            "JEWELLERY" => "jewellery",
+            "FOOD" => "food",
+            "GENERAL_FOOD" => "generalFood",
+            "DIET_FOOD" => "dietFood",
+            "KIDS" => "kids",
+            "MUSICAL_INSTRUMENT" => "musicalInstrument",
+            "SPORTS_EQUIPMENT" => "sportsEquipment",
+            "BOOKS" => "books",
+            "RENTAL_ETC" => "rentalEtc",
+            "RENTAL_HA" => "rentalHa",
+            "DIGITAL_CONTENTS" => "digitalContents",
+            "GIFT_CARD" => "giftCard",
+            "MOBILE_COUPON" => "mobileCoupon",
+            "MOVIE_SHOW" => "movieShow",
+            "ETC_SERVICE" => "etcService",
+            "BIOCHEMISTRY" => "biochemistry",
+            "BIOCIDAL" => "biocidal",
+            "ETC" => "etc",
+            _ => "",
         };
     }
 

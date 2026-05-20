@@ -1219,6 +1219,23 @@ BANNED_MARKETING_TERMS = [
     "무료배송", "할인", "세일", "특가", "추천", "인기", "베스트", "핫템",
     "가성비", "저렴한", "예쁜", "프리미엄", "고급", "고급형", "최고급",
     "판매", "가격", "문의", "상담",
+    "입니다", "되어드립니다", "보호하세요", "있을",
+]
+
+LOW_QUALITY_KEYWORD_TITLE_PATTERNS = [
+    r"\*\*",
+    r"#",
+    r"가이드가이드",
+    r"연결찰탁",
+    r"물막이소",
+    r"스티커입니다",
+    r"브라켓입니다",
+    r"되어드립니다",
+    r"사용자\s*현장용",
+    r"생활\s*현장용",
+    r"교체\s*보수\s*DIY$",
+    r"있을$",
+    r"^[A-Z]\s*\d",
 ]
 
 LISTING_IMAGE_COLUMNS = [
@@ -3097,6 +3114,58 @@ def diversify_naver_ab_tags(channel_map: dict[str, dict]) -> None:
     a["tags"] = a_tags[:10]
 
 
+def keyword_title_penalty(value: object) -> int:
+    title = text_value(value)
+    if not title:
+        return 10
+    penalty = 0
+    compact = re.sub(r"\s+", "", title)
+    if len(title) < 14:
+        penalty += 2
+    if len(title) > 85:
+        penalty += 2
+    if re.search(r"[{}<>]", title):
+        penalty += 2
+    if re.search(r"(.)\1{4,}", compact):
+        penalty += 2
+    for pattern in LOW_QUALITY_KEYWORD_TITLE_PATTERNS:
+        if re.search(pattern, title, flags=re.IGNORECASE):
+            penalty += 3
+    return penalty
+
+
+def is_low_quality_keyword_entry(value: object) -> bool:
+    if not isinstance(value, dict):
+        return True
+    title = text_value(value.get("title"))
+    terms = split_candidate_terms(value.get("searchTerms"))
+    tags = value.get("tags") if isinstance(value.get("tags"), list) else []
+    return keyword_title_penalty(title) >= 3 or not terms or len(tags) < 3
+
+
+def repair_b_market_keywords_from_a(channel_map: dict[str, dict]) -> None:
+    for market in SALES_MARKETS:
+        a_key = f"A:{market}"
+        b_key = f"B:{market}"
+        a_value = channel_map.get(a_key)
+        b_value = channel_map.get(b_key)
+        if not isinstance(a_value, dict) or not isinstance(b_value, dict):
+            continue
+        a_title = text_value(a_value.get("title"))
+        b_title = text_value(b_value.get("title"))
+        title_too_weak = bool(a_title and b_title and len(b_title) < len(a_title))
+        if not is_low_quality_keyword_entry(b_value) and not title_too_weak:
+            continue
+        repaired = dict(a_value)
+        repaired["notes"] = (
+            text_value(repaired.get("notes"))
+            + " / B 생성 결과 품질 저하로 A 기준 상품명과 검색어를 임시 대체"
+        ).strip(" /")
+        repaired["repairedFrom"] = a_key
+        repaired["generatedAt"] = now_text()
+        channel_map[b_key] = repaired
+
+
 def validate_keyword_result(payload: dict, products: list[dict], channels: list[str]) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("keyword result is not an object")
@@ -3135,6 +3204,7 @@ def validate_keyword_result(payload: dict, products: list[dict], channels: list[
                 "generatedAt": now_text(),
             }
         diversify_naver_ab_tags(channel_map)
+        repair_b_market_keywords_from_a(channel_map)
         if channel_map:
             normalized_products.append({"gs": gs, "channels": channel_map})
     if not normalized_products:
@@ -4119,6 +4189,173 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
             "currentStage": "키워드 생성 실패",
             "error": str(exc),
         })
+        write_json(job_path, job)
+
+
+def run_automation_job(job_id: str, payload: dict) -> None:
+    job_path = JOBS_ROOT / f"{job_id}.json"
+    log_path = JOBS_ROOT / f"{job_id}.log"
+    job = read_json(job_path, {"jobId": job_id})
+    batch_size = max(1, min(100, int(payload.get("batchSize") or 20)))
+    run_count = max(1, min(50, int(payload.get("runCount") or 1)))
+    total_limit = batch_size * run_count
+    suppliers = payload.get("suppliers") if isinstance(payload.get("suppliers"), list) else []
+    upload_date = text_value(payload.get("upload_date"))
+    sort_order = text_value(payload.get("sort_order")) or "latest"
+    filter_mode = text_value(payload.get("filter_mode")) or "available"
+    channels = payload.get("channels") if isinstance(payload.get("channels"), list) else []
+    settings = payload.get("listingImageSettings") or {}
+    batches: list[dict] = []
+
+    job.update({
+        "status": "running",
+        "startedAt": now_text(),
+        "logPath": str(log_path),
+        "progressPercent": 2,
+        "currentStage": "자동화 대상 수집",
+        "batchSize": batch_size,
+        "runCount": run_count,
+        "updatedAt": now_text(),
+    })
+    write_json(job_path, job)
+
+    try:
+        skus = pm_select_automation_skus(suppliers, upload_date, sort_order, filter_mode, total_limit)
+        if not skus:
+            raise ValueError("자동화 대상 SKU가 없습니다.")
+        selected_batches = [skus[i:i + batch_size] for i in range(0, min(len(skus), total_limit), batch_size)]
+
+        with log_path.open("w", encoding="utf-8", errors="replace") as log:
+            log.write(f"[{now_text()}] START automationPrepare\n")
+            log.write(f"batchSize={batch_size} runCount={run_count} selectedSku={len(skus)} channels={channels}\n")
+
+        for index, batch_skus in enumerate(selected_batches, start=1):
+            if job_id in CANCELLED_JOB_IDS:
+                raise RuntimeError("cancelled")
+            progress_base = int(((index - 1) / max(1, len(selected_batches))) * 96)
+            job = read_json(job_path, job)
+            job.update({
+                "progressPercent": max(3, min(95, progress_base + 3)),
+                "currentStage": f"{index}/{len(selected_batches)} 배치 소스 CSV 생성",
+                "currentBatch": index,
+                "updatedAt": now_text(),
+            })
+            write_json(job_path, job)
+
+            products = pm_get_products_by_skus(batch_skus)
+            csv_path = pm_build_source_csv(products)
+            preview = parse_source_preview(csv_path)
+            selected_gs = [text_value(row.get("gs")) for row in preview.get("preview", []) if text_value(row.get("gs"))]
+            if not selected_gs:
+                raise ValueError(f"{index}번 배치에서 GS 코드를 찾지 못했습니다.")
+
+            seed_job_id = uuid.uuid4().hex[:12]
+            seed_job_path = JOBS_ROOT / f"{seed_job_id}.json"
+            write_json(seed_job_path, {
+                "ok": True,
+                "jobId": seed_job_id,
+                "action": "sourceToSeed",
+                "status": "queued",
+                "createdAt": now_text(),
+                "parentJobId": job_id,
+            })
+            run_seed_job(seed_job_id, {
+                "sourcePath": str(csv_path),
+                "sourceFilePath": str(csv_path),
+                "selectedGs": selected_gs,
+                "listingImageSettings": settings,
+            })
+            seed_job = read_json(seed_job_path, {})
+            if seed_job.get("status") != "completed":
+                raise RuntimeError(f"{index}번 배치 시드 생성 실패: {seed_job.get('error') or 'unknown error'}")
+            seed_path = text_value((seed_job.get("result") or {}).get("seedPath"))
+
+            keyword_job_id = ""
+            keyword_job = {}
+            if channels:
+                keyword_job_id = uuid.uuid4().hex[:12]
+                keyword_job_path = JOBS_ROOT / f"{keyword_job_id}.json"
+                write_json(keyword_job_path, {
+                    "ok": True,
+                    "jobId": keyword_job_id,
+                    "action": "keywordGenerate",
+                    "status": "queued",
+                    "createdAt": now_text(),
+                    "parentJobId": job_id,
+                })
+                job = read_json(job_path, job)
+                job.update({
+                    "progressPercent": max(5, min(97, progress_base + 35)),
+                    "currentStage": f"{index}/{len(selected_batches)} 배치 키워드 생성",
+                    "updatedAt": now_text(),
+                })
+                write_json(job_path, job)
+                run_keyword_job(keyword_job_id, {
+                    "seedPath": seed_path,
+                    "selectedGs": selected_gs,
+                    "channels": channels,
+                    "listingImageSettings": settings,
+                    "concurrency": 50,
+                })
+                keyword_job = read_json(keyword_job_path, {})
+                if keyword_job.get("status") != "completed":
+                    raise RuntimeError(f"{index}번 배치 키워드 생성 실패: {keyword_job.get('error') or 'unknown error'}")
+
+            batch_result = {
+                "index": index,
+                "skuCount": len(batch_skus),
+                "gsCount": len(selected_gs),
+                "sourcePath": str(csv_path),
+                "seedJobId": seed_job_id,
+                "keywordJobId": keyword_job_id,
+                "seedPath": seed_path,
+                "seedFileName": Path(seed_path).name if seed_path else "",
+                "status": "completed",
+            }
+            batches.append(batch_result)
+            job = read_json(job_path, job)
+            job.update({
+                "batches": batches,
+                "progressPercent": min(98, int((index / max(1, len(selected_batches))) * 98)),
+                "currentStage": f"{index}/{len(selected_batches)} 배치 완료",
+                "updatedAt": now_text(),
+            })
+            write_json(job_path, job)
+
+        job.update({
+            "status": "completed",
+            "finishedAt": now_text(),
+            "progressPercent": 100,
+            "currentStage": "자동화 시드 생성 완료",
+            "batches": batches,
+            "result": {
+                "totalBatches": len(batches),
+                "totalSkus": sum(item.get("skuCount", 0) for item in batches),
+                "totalGs": sum(item.get("gsCount", 0) for item in batches),
+                "seedPaths": [item.get("seedPath") for item in batches if item.get("seedPath")],
+            },
+        })
+        write_json(job_path, job)
+    except Exception as exc:
+        if job_id in CANCELLED_JOB_IDS:
+            job.update({
+                "status": "cancelled",
+                "finishedAt": now_text(),
+                "progressPercent": 100,
+                "currentStage": "사용자 중지",
+                "batches": batches,
+            })
+        else:
+            with log_path.open("a", encoding="utf-8", errors="replace") as log:
+                log.write(f"\n[{now_text()}] ERROR {exc}\n")
+            job.update({
+                "status": "failed",
+                "finishedAt": now_text(),
+                "progressPercent": 100,
+                "currentStage": "자동화 실패",
+                "error": str(exc),
+                "batches": batches,
+            })
         write_json(job_path, job)
 
 
@@ -5418,7 +5655,7 @@ def write_market_export(payload: dict) -> dict:
         "계정", "마켓", "GS코드", "원본상품명", "업로드상품명", "검색어설정",
         "판매가", "소비자가", "옵션입력", "옵션추가금",
         "대표이미지", "이미지등록(목록)", "이미지등록(추가)", "이미지등록(상세)",
-        "상품 상세설명", "Cafe24 URL", "상태",
+        "상품 상세설명", "상품정보제공고시", "Cafe24 URL", "상태",
     ]
     try:
         from openpyxl import Workbook
@@ -5442,6 +5679,9 @@ def write_market_export(payload: dict) -> dict:
                 detail_urls = [public_image_url(url) for url in entry.get("detailImageSrcs", []) if public_image_url(url)]
                 if detail_urls:
                     detail_html = "<center>" + "".join(f'<img src="{url}">' for url in detail_urls[:80]) + "</center>"
+            naver_notice = entry.get("naverProvidedNotice") if isinstance(entry.get("naverProvidedNotice"), dict) else {}
+            naver_notice_payload = naver_notice.get("productInfoProvidedNotice") if isinstance(naver_notice.get("productInfoProvidedNotice"), dict) else {}
+            naver_notice_json = json.dumps(naver_notice_payload, ensure_ascii=False, separators=(",", ":")) if naver_notice_payload else ""
             sheet.append([
                 entry["account"],
                 entry["market"],
@@ -5458,6 +5698,7 @@ def write_market_export(payload: dict) -> dict:
                 "|".join(add_images),
                 "|".join(detail_refs) if detail_refs else "",
                 detail_html,
+                naver_notice_json,
                 entry["cafe24Url"],
                 "대기",
             ])
@@ -5478,6 +5719,9 @@ def write_market_export(payload: dict) -> dict:
                 detail_refs = [direct_upload_image_ref(url) for url in entry.get("detailImageSrcs", [])]
                 detail_refs = [url for url in detail_refs if url]
                 detail_html = normalize_detail_html_for_upload(entry.get("detailHtml")) or normalize_detail_html_for_upload(seed_detail_html_for_gs(entry.get("gs")))
+                naver_notice = entry.get("naverProvidedNotice") if isinstance(entry.get("naverProvidedNotice"), dict) else {}
+                naver_notice_payload = naver_notice.get("productInfoProvidedNotice") if isinstance(naver_notice.get("productInfoProvidedNotice"), dict) else {}
+                naver_notice_json = json.dumps(naver_notice_payload, ensure_ascii=False, separators=(",", ":")) if naver_notice_payload else ""
                 writer.writerow([
                     entry["account"],
                     entry["market"],
@@ -5494,6 +5738,7 @@ def write_market_export(payload: dict) -> dict:
                     "|".join(add_images),
                     "|".join(detail_refs) if detail_refs else "",
                     detail_html,
+                    naver_notice_json,
                     entry["cafe24Url"],
                     "대기",
                 ])
@@ -5706,6 +5951,26 @@ def pm_get_products_by_skus(sku_list: list[str]) -> list[dict]:
         return [dict(p) for p in products]
     finally:
         conn.close()
+
+
+def pm_select_automation_skus(
+    suppliers: list[str],
+    upload_date: str = "",
+    sort_order: str = "latest",
+    filter_mode: str = "available",
+    total_limit: int = 100,
+) -> list[str]:
+    result = pm_get_products_paginated(
+        suppliers,
+        upload_date,
+        sort_order,
+        filter_mode,
+        "",
+        1,
+        max(1, int(total_limit or 100)),
+        999999,
+    )
+    return [text_value(item.get("sku_group")) for item in result.get("products", []) if text_value(item.get("sku_group"))]
 
 
 def pm_get_available_products(suppliers: list[str], sort_order: str = "latest",
@@ -6036,6 +6301,9 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
             if path == "/api/keyword-generate":
                 self.handle_keyword_generate()
                 return
+            if path == "/api/automation-prepare":
+                self.handle_automation_prepare()
+                return
             if path == "/api/seed-update-images":
                 self.handle_seed_update_images()
                 return
@@ -6196,6 +6464,24 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
         }
         write_json(job_path, job)
         thread = threading.Thread(target=run_keyword_job, args=(job_id, payload), daemon=True)
+        thread.start()
+        self.send_json(job, 202)
+
+    def handle_automation_prepare(self) -> None:
+        payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+        job_id = uuid.uuid4().hex[:12]
+        job_path = JOBS_ROOT / f"{job_id}.json"
+        job = {
+            "ok": True,
+            "jobId": job_id,
+            "action": "automationPrepare",
+            "status": "queued",
+            "createdAt": now_text(),
+            "progressPercent": 1,
+            "currentStage": "자동화 작업 대기",
+        }
+        write_json(job_path, job)
+        thread = threading.Thread(target=run_automation_job, args=(job_id, payload), daemon=True)
         thread.start()
         self.send_json(job, 202)
 

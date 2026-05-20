@@ -362,7 +362,7 @@ input[type="checkbox"] {
 
 /* ── Entry cards (STEP 01 선택 화면) ────────────────────── */
 .entry-cards {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;
   padding: 8px 0;
 }
 .entry-card {
@@ -406,6 +406,161 @@ input[type="checkbox"] {
 }
 @media (max-width: 860px) {
   .entry-cards { grid-template-columns: 1fr; }
+}
+
+/* ── Automation prep ─────────────────────────────────────── */
+.automation-prep {
+  padding: 18px;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.automation-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.automation-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.automation-input {
+  width: 100%;
+  height: 38px;
+}
+.automation-suppliers {
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: rgba(255,255,255,.55);
+  padding: 12px;
+}
+.automation-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.automation-row-head > div {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.automation-supplier-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+.automation-supplier-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  font-size: 13px;
+}
+.automation-supplier-item span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.automation-supplier-item small {
+  color: var(--fg-3);
+  font-variant-numeric: tabular-nums;
+}
+.automation-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  align-items: stretch;
+}
+.automation-summary > div {
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: rgba(255,255,255,.64);
+  padding: 12px;
+  min-width: 0;
+}
+.automation-summary small {
+  display: block;
+  color: var(--fg-3);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+.automation-summary strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.automation-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+.automation-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.automation-progress-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(66,85,255,.10);
+}
+.automation-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--bg-aurora);
+  transition: width .2s ease;
+}
+.automation-job-meta {
+  display: flex;
+  justify-content: space-between;
+  color: var(--fg-3);
+  font-size: 12px;
+}
+.automation-batches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+.automation-batch-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: rgba(255,255,255,.72);
+  font-size: 12px;
+}
+.automation-batch-item strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 980px) {
+  .automation-grid,
+  .automation-summary { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 640px) {
+  .automation-grid,
+  .automation-summary { grid-template-columns: 1fr; }
 }
 
 /* ── Seed picker (시드 선택 서브화면) ────────────────────── */
