@@ -313,13 +313,6 @@ public sealed class CoupangUploadService
             var stateImages = row.TryGetValue("_cafe24_image_urls", out var imageValue) && imageValue is IEnumerable<string> imageUrls
                 ? imageUrls.Where(MarketImageUrlGuard.IsAllowedUploadUrl).Distinct(StringComparer.OrdinalIgnoreCase).ToList()
                 : new List<string>();
-            var priceError = ValidateMinimumSalePrice(productJson);
-            if (!string.IsNullOrWhiteSpace(priceError))
-            {
-                results.Add(new CoupangUploadResultItem((int)row["_row_num"]!, shortName, "PRICE_FAIL", $"[{catCode}] {catName}", "", priceError));
-                MarketUploadStateStore.Upsert(productGsCode, shortName, "쿠팡", "PRICE_FAIL", "", stateImages, priceError);
-                continue;
-            }
             products.Add(((int)row["_row_num"]!, productGsCode, shortName, $"[{catCode}] {catName}", productJson, stateImages));
         }
 
@@ -435,22 +428,6 @@ public sealed class CoupangUploadService
 
     private static string GetStr(Dictionary<string, object?> row, string key)
         => row.TryGetValue(key, out var v) && v is not null ? v.ToString()?.Trim() ?? "" : "";
-
-    private static string ValidateMinimumSalePrice(JsonObject productJson)
-    {
-        if (productJson.TryGetPropertyValue("items", out var itemsNode) && itemsNode is JsonArray items)
-        {
-            foreach (var item in items)
-            {
-                var name = item?["itemName"]?.GetValue<string>() ?? "옵션";
-                var salePrice = item?["salePrice"]?.GetValue<int>() ?? 0;
-                if (salePrice > 0 && salePrice < 3000)
-                    return $"쿠팡 최소 판매가 3000원 미만: {name}={salePrice}원";
-            }
-        }
-
-        return "";
-    }
 
     private static string? ResolveDefaultHomeCafe24TokenPath()
     {

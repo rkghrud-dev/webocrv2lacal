@@ -449,6 +449,10 @@ public sealed class NaverUploadService
                     ["plural"] = false,
                 },
                 ["productInfoProvidedNotice"] = BuildProductInfoProvidedNotice(row, productName, sellerCode),
+                ["unitCapacity"] = new JsonObject
+                {
+                    ["unitPriceYn"] = false,
+                },
                 ["certificationTargetExcludeContent"] = new JsonObject
                 {
                     ["childCertifiedProductExclusionYn"] = true,
@@ -516,13 +520,13 @@ public sealed class NaverUploadService
             .OrIfEmpty(GetStr(row, "상품정보제공고시"))
             .OrIfEmpty(GetStr(row, "naverProvidedNotice"));
 
-        if (TryParseProvidedNotice(raw, out var providedNotice))
+        if (TryParseProvidedNotice(raw, productName, out var providedNotice))
             return providedNotice;
 
         return BuildDefaultProvidedNotice(productName, sellerCode);
     }
 
-    private static bool TryParseProvidedNotice(string raw, out JsonObject providedNotice)
+    private static bool TryParseProvidedNotice(string raw, string productName, out JsonObject providedNotice)
     {
         providedNotice = new JsonObject();
         if (string.IsNullOrWhiteSpace(raw))
@@ -546,7 +550,14 @@ public sealed class NaverUploadService
             if (string.IsNullOrWhiteSpace(objectKey) || obj[objectKey] is not JsonObject)
                 return false;
 
-            providedNotice = JsonNode.Parse(obj.ToJsonString())!.AsObject();
+            if (string.Equals(type, "WEAR", StringComparison.OrdinalIgnoreCase)
+                && ShouldUseSportsEquipmentNotice(productName))
+            {
+                providedNotice = BuildDefaultProvidedNotice(productName, "");
+                return true;
+            }
+
+            providedNotice = NormalizeProvidedNotice(obj, objectKey);
             return true;
         }
         catch
@@ -560,16 +571,171 @@ public sealed class NaverUploadService
     {
         var itemName = string.IsNullOrWhiteSpace(productName) ? "상품상세 참조" : productName;
         var modelName = string.IsNullOrWhiteSpace(sellerCode) ? itemName : sellerCode;
+        var noticeType = InferDefaultProvidedNoticeType(productName);
+        if (noticeType is "SHOES")
+        {
+            return new JsonObject
+            {
+                ["productInfoProvidedNoticeType"] = "SHOES",
+                ["shoes"] = new JsonObject
+                {
+                    ["material"] = "상품상세 참조",
+                    ["color"] = "상품상세 참조",
+                    ["size"] = "상품상세 참조",
+                    ["height"] = "해당사항 없음",
+                    ["manufacturer"] = "상품상세 참조",
+                    ["caution"] = "상품상세 참조",
+                    ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
+                    ["afterServiceDirector"] = "010-2324-8352",
+                },
+            };
+        }
+        if (noticeType is "WEAR")
+        {
+            return new JsonObject
+            {
+                ["productInfoProvidedNoticeType"] = "WEAR",
+                ["wear"] = new JsonObject
+                {
+                    ["material"] = "상품상세 참조",
+                    ["color"] = "상품상세 참조",
+                    ["size"] = "상품상세 참조",
+                    ["manufacturer"] = "상품상세 참조",
+                    ["caution"] = "상품상세 참조",
+                    ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
+                    ["afterServiceDirector"] = "010-2324-8352",
+                },
+            };
+        }
+        if (noticeType is "BAG")
+        {
+            return new JsonObject
+            {
+                ["productInfoProvidedNoticeType"] = "BAG",
+                ["bag"] = new JsonObject
+                {
+                    ["type"] = itemName,
+                    ["material"] = "상품상세 참조",
+                    ["color"] = "상품상세 참조",
+                    ["size"] = "상품상세 참조",
+                    ["manufacturer"] = "상품상세 참조",
+                    ["caution"] = "상품상세 참조",
+                    ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
+                    ["afterServiceDirector"] = "010-2324-8352",
+                },
+            };
+        }
+        if (noticeType is "SPORTS_EQUIPMENT")
+        {
+            return new JsonObject
+            {
+                ["productInfoProvidedNoticeType"] = "SPORTS_EQUIPMENT",
+                ["sportsEquipment"] = new JsonObject
+                {
+                    ["itemName"] = itemName,
+                    ["modelName"] = modelName,
+                    ["certificationType"] = "해당 없음",
+                    ["size"] = "상품상세 참조",
+                    ["weight"] = "상품상세 참조",
+                    ["color"] = "상품상세 참조",
+                    ["material"] = "상품상세 참조",
+                    ["components"] = "본품",
+                    ["releaseDateText"] = "상품상세 참조",
+                    ["manufacturer"] = "상품상세 참조",
+                    ["detailContent"] = "상품상세 참조",
+                    ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
+                    ["afterServiceDirector"] = "010-2324-8352",
+                },
+            };
+        }
+        if (noticeType is "FASHION_ITEMS")
+        {
+            return new JsonObject
+            {
+                ["productInfoProvidedNoticeType"] = "FASHION_ITEMS",
+                ["fashionItems"] = new JsonObject
+                {
+                    ["type"] = itemName,
+                    ["material"] = "상품상세 참조",
+                    ["size"] = "상품상세 참조",
+                    ["manufacturer"] = "상품상세 참조",
+                    ["caution"] = "상품상세 참조",
+                    ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
+                    ["afterServiceDirector"] = "010-2324-8352",
+                },
+            };
+        }
+        if (noticeType is "KITCHEN_UTENSILS")
+        {
+            return new JsonObject
+            {
+                ["productInfoProvidedNoticeType"] = "KITCHEN_UTENSILS",
+                ["kitchenUtensils"] = new JsonObject
+                {
+                    ["itemName"] = itemName,
+                    ["modelName"] = modelName,
+                    ["material"] = "상품상세 참조",
+                    ["component"] = "본품",
+                    ["size"] = "상품상세 참조",
+                    ["releaseDateText"] = "상품상세 참조",
+                    ["manufacturer"] = "상품상세 참조",
+                    ["producer"] = "상품상세 참조",
+                    ["importDeclaration"] = "해당 없음",
+                    ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
+                    ["afterServiceDirector"] = "010-2324-8352",
+                },
+            };
+        }
+        if (noticeType is "CAR_ARTICLES")
+        {
+            return new JsonObject
+            {
+                ["productInfoProvidedNoticeType"] = "CAR_ARTICLES",
+                ["carArticles"] = new JsonObject
+                {
+                    ["itemName"] = itemName,
+                    ["modelName"] = modelName,
+                    ["releaseDateText"] = "상품상세 참조",
+                    ["certificationType"] = "해당 없음",
+                    ["caution"] = "상품상세 참조",
+                    ["manufacturer"] = "상품상세 참조",
+                    ["size"] = "상품상세 참조",
+                    ["applyModel"] = "상품상세 참조",
+                    ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
+                    ["roadWorthyCertification"] = "해당 없음",
+                    ["afterServiceDirector"] = "010-2324-8352",
+                },
+            };
+        }
+        if (noticeType is "FURNITURE")
+        {
+            return new JsonObject
+            {
+                ["productInfoProvidedNoticeType"] = "FURNITURE",
+                ["furniture"] = new JsonObject
+                {
+                    ["itemName"] = itemName,
+                    ["certificationType"] = "해당 없음",
+                    ["color"] = "상품상세 참조",
+                    ["components"] = "본품",
+                    ["material"] = "상품상세 참조",
+                    ["manufacturer"] = "상품상세 참조",
+                    ["importer"] = "상품상세 참조",
+                    ["producer"] = "상품상세 참조",
+                    ["size"] = "상품상세 참조",
+                    ["installedCharge"] = "상품상세 참조",
+                    ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
+                    ["refurb"] = "해당 없음",
+                    ["afterServiceDirector"] = "010-2324-8352",
+                },
+            };
+        }
+
         return new JsonObject
         {
             ["productInfoProvidedNoticeType"] = "ETC",
             ["etc"] = new JsonObject
             {
-                ["returnCostReason"] = "0",
-                ["noRefundReason"] = "0",
-                ["qualityAssuranceStandard"] = "0",
-                ["compensationProcedure"] = "0",
-                ["troubleShootingContents"] = "0",
                 ["itemName"] = itemName,
                 ["modelName"] = modelName,
                 ["certificateDetails"] = "해당 없음",
@@ -578,6 +744,58 @@ public sealed class NaverUploadService
             },
         };
     }
+
+    private static JsonObject NormalizeProvidedNotice(JsonObject obj, string objectKey)
+    {
+        var type = obj["productInfoProvidedNoticeType"]?.GetValue<string>()?.Trim() ?? "";
+        if (!string.Equals(type, "ETC", StringComparison.OrdinalIgnoreCase)
+            || obj[objectKey] is not JsonObject etc)
+        {
+            var normalized = JsonNode.Parse(obj.ToJsonString())!.AsObject();
+            return normalized;
+        }
+
+        string Field(string name, string fallback = "상품상세 참조")
+            => etc[name]?.GetValue<string>()?.Trim().OrIfEmpty(fallback) ?? fallback;
+
+        return new JsonObject
+        {
+            ["productInfoProvidedNoticeType"] = "ETC",
+            ["etc"] = new JsonObject
+            {
+                ["itemName"] = Field("itemName"),
+                ["modelName"] = Field("modelName"),
+                ["certificateDetails"] = Field("certificateDetails", "해당 없음"),
+                ["manufacturer"] = Field("manufacturer"),
+                ["customerServicePhoneNumber"] = Field("customerServicePhoneNumber", "010-2324-8352"),
+            },
+        };
+    }
+
+    private static string InferDefaultProvidedNoticeType(string productName)
+    {
+        var text = productName ?? string.Empty;
+        if (Regex.IsMatch(text, "깔창|인솔|신발|운동화|구두|슬리퍼|부츠"))
+            return "SHOES";
+        if (Regex.IsMatch(text, "가방|백팩|파우치|숄더백|토트백"))
+            return "BAG";
+        if (Regex.IsMatch(text, "모자|벨트|액세서리|악세사리|키링|브로치|헤어|머리|집게|핀|고리"))
+            return "FASHION_ITEMS";
+        if (ShouldUseSportsEquipmentNotice(text))
+            return "SPORTS_EQUIPMENT";
+        if (Regex.IsMatch(text, "의류|티셔츠|셔츠|바지|자켓|재킷|점퍼|원피스|스커트"))
+            return "WEAR";
+        if (Regex.IsMatch(text, "주방|키친|냄비|프라이팬|후라이팬|식기|컵|접시|조리|칼|도마|수저|주걱"))
+            return "KITCHEN_UTENSILS";
+        if (Regex.IsMatch(text, "자동차|차량|차종|세차|와이퍼|타이어|핸들|대시보드|카매트|오토바이"))
+            return "CAR_ARTICLES";
+        if (Regex.IsMatch(text, "가구|의자|책상|테이블|선반|수납장|침대|소파|브라켓|행거"))
+            return "FURNITURE";
+        return "ETC";
+    }
+
+    private static bool ShouldUseSportsEquipmentNotice(string text)
+        => Regex.IsMatch(text ?? string.Empty, "스포츠|운동|헬스|요가|필라테스|테이핑|보호대|밴드|스트랩|고정밴드|발목밴드|공|라켓|골프|등산|자전거");
 
     private static string ProvidedNoticeObjectKey(string type)
     {

@@ -1350,7 +1350,17 @@ def write_json(path: Path, payload: dict) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        last_error: Exception | None = None
+        for attempt in range(8):
+            try:
+                os.replace(tmp, path)
+                last_error = None
+                break
+            except PermissionError as exc:
+                last_error = exc
+                time.sleep(0.05 * (attempt + 1))
+        if last_error is not None:
+            raise last_error
     finally:
         try:
             if tmp.exists():
@@ -2223,6 +2233,10 @@ NOTICE_REVIEW_DEFAULTS = {
     "caution": "0",
 }
 
+NOTICE_TEXT_DEFAULT = "상품상세 참조"
+NOTICE_CERT_DEFAULT = "해당 없음"
+NOTICE_AS_DEFAULT = "010-2324-8352"
+
 NOTICE_FIELD_LABELS = [
     "소재", "재질", "수량", "색상", "사이즈", "수입사", "수입원", "제조사",
     "제조자", "제조원", "제조국", "원산지", "A/S", "AS", "고객센터",
@@ -2324,6 +2338,7 @@ def extract_notice_dimensions(raw_text: str) -> list[str]:
 def infer_notice_type(row: dict, extracted: dict[str, str], raw_text: str) -> tuple[str, str]:
     joined = " ".join([
         text_value(row.get("name")),
+        text_value(row.get("sourceName")),
         text_value(row.get("opt")),
         text_value(raw_text),
     ])
@@ -2331,8 +2346,18 @@ def infer_notice_type(row: dict, extracted: dict[str, str], raw_text: str) -> tu
         return "SHOES", "shoes"
     if re.search(r"가방|백팩|파우치|숄더백|토트백", joined):
         return "BAG", "bag"
+    if re.search(r"모자|벨트|액세서리|악세사리|키링|브로치|헤어|머리|집게|핀|고리", joined):
+        return "FASHION_ITEMS", "fashionItems"
+    if re.search(r"스포츠|운동|헬스|요가|필라테스|테이핑|보호대|밴드|스트랩|고정밴드|발목밴드|공|라켓|골프|등산|자전거", joined):
+        return "SPORTS_EQUIPMENT", "sportsEquipment"
     if re.search(r"의류|티셔츠|셔츠|바지|자켓|재킷|점퍼|원피스|스커트", joined):
         return "WEAR", "wear"
+    if re.search(r"주방|키친|냄비|프라이팬|후라이팬|식기|컵|접시|조리|칼|도마|수저|주걱", joined):
+        return "KITCHEN_UTENSILS", "kitchenUtensils"
+    if re.search(r"자동차|차량|차종|세차|와이퍼|타이어|핸들|대시보드|카매트|오토바이", joined):
+        return "CAR_ARTICLES", "carArticles"
+    if re.search(r"가구|의자|책상|테이블|선반|수납장|침대|소파|브라켓|행거", joined):
+        return "FURNITURE", "furniture"
     return "ETC", "etc"
 
 
@@ -2361,10 +2386,12 @@ def build_naver_provided_notice(row: dict, ocr_record: dict) -> dict:
     extracted = {key: value for key, value in extracted.items() if value}
 
     notice_type, object_key = infer_notice_type(row, extracted, raw_text)
-    manufacturer = extracted.get("manufacturer") or extracted.get("importer") or "상품상세 참조"
-    material = extracted.get("material") or "상품상세 참조"
-    color = extracted.get("color") or "상품상세 참조"
-    size = extracted.get("size") or extracted.get("sizeDetail") or "상품상세 참조"
+    manufacturer = extracted.get("manufacturer") or extracted.get("importer") or NOTICE_TEXT_DEFAULT
+    material = extracted.get("material") or NOTICE_TEXT_DEFAULT
+    color = extracted.get("color") or NOTICE_TEXT_DEFAULT
+    size = extracted.get("size") or extracted.get("sizeDetail") or NOTICE_TEXT_DEFAULT
+    model_name = extracted.get("modelName") or text_value(row.get("baseGs")) or text_value(row.get("gs")) or source_name
+    as_director = extracted.get("customerServicePhoneNumber") or NOTICE_AS_DEFAULT
 
     if notice_type == "SHOES":
         detail = {
@@ -2395,13 +2422,86 @@ def build_naver_provided_notice(row: dict, ocr_record: dict) -> dict:
             "size": size,
             "manufacturer": manufacturer,
         }
-    else:
+    elif notice_type == "FASHION_ITEMS":
+        detail = {
+            **NOTICE_COMMON_DEFAULTS,
+            **NOTICE_REVIEW_DEFAULTS,
+            "type": source_name,
+            "material": material,
+            "size": size,
+            "manufacturer": manufacturer,
+        }
+    elif notice_type == "SPORTS_EQUIPMENT":
         detail = {
             **NOTICE_COMMON_DEFAULTS,
             "itemName": source_name,
-            "modelName": extracted.get("modelName") or text_value(row.get("baseGs")) or source_name,
+            "modelName": model_name,
+            "certificationType": NOTICE_CERT_DEFAULT,
+            "size": size,
+            "weight": NOTICE_TEXT_DEFAULT,
+            "color": color,
+            "material": material,
+            "components": "본품",
+            "releaseDateText": NOTICE_TEXT_DEFAULT,
             "manufacturer": manufacturer,
-            "customerServicePhoneNumber": extracted.get("customerServicePhoneNumber") or "상품상세 참조",
+            "detailContent": NOTICE_TEXT_DEFAULT,
+            "warrantyPolicy": "관련 법 및 소비자분쟁해결기준에 따름",
+            "afterServiceDirector": as_director,
+        }
+    elif notice_type == "KITCHEN_UTENSILS":
+        detail = {
+            **NOTICE_COMMON_DEFAULTS,
+            "itemName": source_name,
+            "modelName": model_name,
+            "material": material,
+            "component": "본품",
+            "size": size,
+            "releaseDateText": NOTICE_TEXT_DEFAULT,
+            "manufacturer": manufacturer,
+            "producer": extracted.get("origin") or NOTICE_TEXT_DEFAULT,
+            "importDeclaration": NOTICE_CERT_DEFAULT,
+            "warrantyPolicy": "관련 법 및 소비자분쟁해결기준에 따름",
+            "afterServiceDirector": as_director,
+        }
+    elif notice_type == "CAR_ARTICLES":
+        detail = {
+            **NOTICE_COMMON_DEFAULTS,
+            "itemName": source_name,
+            "modelName": model_name,
+            "releaseDateText": NOTICE_TEXT_DEFAULT,
+            "certificationType": NOTICE_CERT_DEFAULT,
+            "caution": NOTICE_TEXT_DEFAULT,
+            "manufacturer": manufacturer,
+            "size": size,
+            "applyModel": NOTICE_TEXT_DEFAULT,
+            "warrantyPolicy": "관련 법 및 소비자분쟁해결기준에 따름",
+            "roadWorthyCertification": NOTICE_CERT_DEFAULT,
+            "afterServiceDirector": as_director,
+        }
+    elif notice_type == "FURNITURE":
+        detail = {
+            **NOTICE_COMMON_DEFAULTS,
+            "itemName": source_name,
+            "certificationType": NOTICE_CERT_DEFAULT,
+            "color": color,
+            "components": "본품",
+            "material": material,
+            "manufacturer": manufacturer,
+            "importer": extracted.get("importer") or NOTICE_TEXT_DEFAULT,
+            "producer": extracted.get("origin") or NOTICE_TEXT_DEFAULT,
+            "size": size,
+            "installedCharge": NOTICE_TEXT_DEFAULT,
+            "warrantyPolicy": "관련 법 및 소비자분쟁해결기준에 따름",
+            "refurb": NOTICE_CERT_DEFAULT,
+            "afterServiceDirector": as_director,
+        }
+    else:
+        detail = {
+            "itemName": source_name,
+            "modelName": model_name,
+            "certificateDetails": NOTICE_CERT_DEFAULT,
+            "manufacturer": manufacturer,
+            "customerServicePhoneNumber": as_director,
         }
 
     needs_review: list[str] = []
@@ -4851,6 +4951,32 @@ def infer_direct_upload_categories(entry: dict) -> dict[str, str]:
     return out
 
 
+def naver_notice_payload_for_entry(entry: dict) -> dict:
+    notice = entry.get("naverProvidedNotice") if isinstance(entry.get("naverProvidedNotice"), dict) else {}
+    payload = notice.get("productInfoProvidedNotice") if isinstance(notice.get("productInfoProvidedNotice"), dict) else {}
+    current_type = text_value(payload.get("productInfoProvidedNoticeType") or notice.get("productInfoProvidedNoticeType")).upper()
+    candidate = build_naver_provided_notice({
+        "gs": entry.get("gs", ""),
+        "baseGs": split_gs(entry.get("gs", ""))[0],
+        "name": entry.get("title") or entry.get("sourceName") or entry.get("gs", ""),
+        "sourceName": entry.get("sourceName", ""),
+        "opt": entry.get("optionSummary", ""),
+        "optionItems": entry.get("optionItems", []),
+    }, {
+        "rawText": " ".join([
+            text_value(entry.get("title")),
+            text_value(entry.get("sourceName")),
+            text_value(entry.get("searchTerms")),
+            text_value(entry.get("detailHtml")),
+        ])
+    })
+    candidate_payload = candidate.get("productInfoProvidedNotice") if isinstance(candidate, dict) else {}
+    candidate_type = text_value(candidate_payload.get("productInfoProvidedNoticeType")).upper() if isinstance(candidate_payload, dict) else ""
+    if not payload or (current_type == "ETC" and candidate_type and candidate_type != "ETC"):
+        return candidate_payload if isinstance(candidate_payload, dict) else {}
+    return payload
+
+
 def write_direct_upload_workbook(job_id: str, entry: dict) -> Path:
     try:
         from openpyxl import Workbook
@@ -4904,6 +5030,8 @@ def write_direct_upload_workbook(job_id: str, entry: dict) -> Path:
     upload_category_mode = text_value(entry.get("categoryMode")).lower() == "upload"
     naver_category = "" if upload_category_mode and entry["market"] == "네이버" else categories.get("naver", "")
     coupang_category = "" if upload_category_mode and entry["market"] == "쿠팡" else categories.get("coupang", "")
+    naver_notice_payload = naver_notice_payload_for_entry(entry)
+    naver_notice_json = json.dumps(naver_notice_payload, ensure_ascii=False, separators=(",", ":")) if naver_notice_payload else ""
 
     headers = [
         "상품코드", "자체 상품코드", "판매자내부상품번호", "상품명", "공급사 상품명",
@@ -4914,7 +5042,7 @@ def write_direct_upload_workbook(job_id: str, entry: dict) -> Path:
         "홈런_공통마켓검색키워드", "공통마켓검색키워드", "검색어설정", "검색키워드",
         "판매가", "상품가", "소비자가", "옵션입력", "옵션추가금",
         "이미지등록(목록)", "이미지등록(추가)", "이미지등록(상세)",
-        "상품 상세설명", "상세설명", "브랜드",
+        "상품 상세설명", "상세설명", "상품정보제공고시", "네이버상품정보고시", "브랜드",
     ]
     row = {
         "상품코드": entry["gs"],
@@ -4956,6 +5084,8 @@ def write_direct_upload_workbook(job_id: str, entry: dict) -> Path:
         ) if detail_sources else "",
         "상품 상세설명": detail_html,
         "상세설명": detail_html,
+        "상품정보제공고시": naver_notice_json if entry["market"] == "네이버" else "",
+        "네이버상품정보고시": naver_notice_json if entry["market"] == "네이버" else "",
         "브랜드": text_value(entry.get("brand")) or "샤플라이",
     }
 
@@ -5791,8 +5921,7 @@ def write_market_export(payload: dict) -> dict:
                 detail_urls = [public_image_url(url) for url in entry.get("detailImageSrcs", []) if public_image_url(url)]
                 if detail_urls:
                     detail_html = "<center>" + "".join(f'<img src="{url}">' for url in detail_urls[:80]) + "</center>"
-            naver_notice = entry.get("naverProvidedNotice") if isinstance(entry.get("naverProvidedNotice"), dict) else {}
-            naver_notice_payload = naver_notice.get("productInfoProvidedNotice") if isinstance(naver_notice.get("productInfoProvidedNotice"), dict) else {}
+            naver_notice_payload = naver_notice_payload_for_entry(entry)
             naver_notice_json = json.dumps(naver_notice_payload, ensure_ascii=False, separators=(",", ":")) if naver_notice_payload else ""
             sheet.append([
                 entry["account"],
@@ -5831,8 +5960,7 @@ def write_market_export(payload: dict) -> dict:
                 detail_refs = [direct_upload_image_ref(url) for url in entry.get("detailImageSrcs", [])]
                 detail_refs = [url for url in detail_refs if url]
                 detail_html = normalize_detail_html_for_upload(entry.get("detailHtml")) or normalize_detail_html_for_upload(seed_detail_html_for_gs(entry.get("gs")))
-                naver_notice = entry.get("naverProvidedNotice") if isinstance(entry.get("naverProvidedNotice"), dict) else {}
-                naver_notice_payload = naver_notice.get("productInfoProvidedNotice") if isinstance(naver_notice.get("productInfoProvidedNotice"), dict) else {}
+                naver_notice_payload = naver_notice_payload_for_entry(entry)
                 naver_notice_json = json.dumps(naver_notice_payload, ensure_ascii=False, separators=(",", ":")) if naver_notice_payload else ""
                 writer.writerow([
                     entry["account"],

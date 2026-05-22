@@ -1,10 +1,14 @@
 using System.Reflection;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ClosedXML.Excel;
 using KeywordOcr.App.Services;
+
+Console.OutputEncoding = Encoding.UTF8;
+Console.InputEncoding = Encoding.UTF8;
 
 if (args.Any(arg => string.Equals(arg, "--validate-market-excel", StringComparison.OrdinalIgnoreCase)))
 {
