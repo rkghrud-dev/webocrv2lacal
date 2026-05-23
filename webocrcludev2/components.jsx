@@ -1082,6 +1082,23 @@ function seedTooltipLines(seed) {
   ].filter(Boolean);
 }
 
+function seedTone(seed) {
+  const progress = seed?.progress || {};
+  const failed = Number(progress.uploadFailed || 0);
+  const total = Number(progress.uploadTotal || 0);
+  const done = Number(progress.uploadDone || 0);
+  if (progress.state === 'failed' || failed > 0) return 'error';
+  if ((progress.state === 'uploaded' || total > 0) && total > 0 && done >= total) return 'done';
+  return 'pending';
+}
+
+function seedGroupTone(seeds = []) {
+  const tones = seeds.map(seedTone);
+  if (tones.some((tone) => tone === 'error')) return 'error';
+  if (tones.length && tones.every((tone) => tone === 'done')) return 'done';
+  return 'pending';
+}
+
 function Sidebar({
   source,
   seedFiles = [],
@@ -1106,11 +1123,7 @@ function Sidebar({
     });
     return groups;
   }, [seedFiles]);
-  const todayKey = new Date().toISOString().slice(0, 10);
-  const [openSeedDates, setOpenSeedDates] = useState(() => ({ [todayKey]: true }));
-  useEffect(() => {
-    setOpenSeedDates((current) => current && Object.keys(current).length ? current : { [todayKey]: true });
-  }, [todayKey]);
+  const [openSeedDates, setOpenSeedDates] = useState({});
   useEffect(() => {
     if (!seedMenu) return undefined;
     const close = () => setSeedMenu(null);
@@ -1150,9 +1163,10 @@ function Sidebar({
             <div className="seed-store-path">{seedStorePath}</div>
             <div className="seed-list">
               {seedFiles.length > 0 ? seedGroups.map((group) => {
-                const expanded = openSeedDates[group.date] !== false;
+                const expanded = openSeedDates[group.date] === true;
+                const groupTone = seedGroupTone(group.seeds);
                 return (
-                  <div className="seed-date-group" key={group.date}>
+                  <div className={`seed-date-group seed-tone-${groupTone}`} key={group.date}>
                     <button
                       type="button"
                       className="seed-date-toggle"
@@ -1163,7 +1177,7 @@ function Sidebar({
                     {expanded && group.seeds.map((seed) => (
                       <button
                         type="button"
-                        className={`seed-item seed-state-${seed.progress?.state || 'seeded'}`}
+                        className={`seed-item seed-state-${seed.progress?.state || 'seeded'} seed-tone-${seedTone(seed)}`}
                         key={seed.id}
                         onClick={() => onLoadSeed?.(seed)}
                         onContextMenu={(e) => {

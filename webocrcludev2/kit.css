@@ -250,6 +250,27 @@ input[type="checkbox"] {
 .seed-date-toggle b {
   color: var(--color-quizlet-violet);
 }
+.seed-date-group.seed-tone-pending .seed-date-toggle {
+  border-color: rgba(59,130,246,.22);
+  background: rgba(59,130,246,.08);
+}
+.seed-date-group.seed-tone-pending .seed-date-toggle b {
+  color: #2563eb;
+}
+.seed-date-group.seed-tone-done .seed-date-toggle {
+  border-color: rgba(16,185,129,.24);
+  background: rgba(16,185,129,.09);
+}
+.seed-date-group.seed-tone-done .seed-date-toggle b {
+  color: #059669;
+}
+.seed-date-group.seed-tone-error .seed-date-toggle {
+  border-color: rgba(239,68,68,.24);
+  background: rgba(254,226,226,.75);
+}
+.seed-date-group.seed-tone-error .seed-date-toggle b {
+  color: #dc2626;
+}
 .seed-item {
   position: relative;
   display: grid;
@@ -270,11 +291,29 @@ input[type="checkbox"] {
   border-color: rgba(66,85,255,.35);
   box-shadow: 0 4px 14px rgba(66,85,255,.12);
 }
-.seed-state-failed {
-  border-color: rgba(239,68,68,.28);
+.seed-item.seed-tone-pending {
+  border-color: rgba(59,130,246,.22);
+  background: linear-gradient(90deg, rgba(59,130,246,.08), rgba(255,255,255,.96) 44%);
 }
-.seed-state-uploaded {
-  border-color: rgba(16,185,129,.28);
+.seed-item.seed-tone-pending:hover {
+  border-color: rgba(59,130,246,.42);
+  box-shadow: 0 4px 14px rgba(59,130,246,.13);
+}
+.seed-item.seed-tone-done {
+  border-color: rgba(16,185,129,.26);
+  background: linear-gradient(90deg, rgba(16,185,129,.10), rgba(255,255,255,.96) 44%);
+}
+.seed-item.seed-tone-done:hover {
+  border-color: rgba(16,185,129,.42);
+  box-shadow: 0 4px 14px rgba(16,185,129,.13);
+}
+.seed-item.seed-tone-error {
+  border-color: rgba(239,68,68,.30);
+  background: linear-gradient(90deg, rgba(254,226,226,.86), rgba(255,255,255,.96) 48%);
+}
+.seed-item.seed-tone-error:hover {
+  border-color: rgba(239,68,68,.48);
+  box-shadow: 0 4px 14px rgba(239,68,68,.12);
 }
 .seed-item-text {
   display: grid;
@@ -304,6 +343,18 @@ input[type="checkbox"] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.seed-tone-pending .seed-status-badge {
+  background: rgba(59,130,246,.10);
+  color: #2563eb;
+}
+.seed-tone-done .seed-status-badge {
+  background: rgba(16,185,129,.12);
+  color: #047857;
+}
+.seed-tone-error .seed-status-badge {
+  background: rgba(239,68,68,.12);
+  color: #dc2626;
 }
 .seed-hover-card {
   display: none;
