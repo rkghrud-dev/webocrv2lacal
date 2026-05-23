@@ -41,6 +41,7 @@ LOGO_ROOT = DATA_ROOT / "logos"
 JOBS_ROOT = DATA_ROOT / "jobs"
 SEED_ROOT = DATA_ROOT / "seeds"
 EXPORT_ROOT = DATA_ROOT / "exports"
+EMERGENCY_ROOT = DATA_ROOT / "emergency"
 MARKET_KEY_ROOT = DATA_ROOT / "market_keys"
 MARKET_KEY_SETTINGS = MARKET_KEY_ROOT / "settings.json"
 CATEGORY_REFERENCE_ROOT = PROJECT_ROOT / "data" / "category_reference"
@@ -50,7 +51,7 @@ DESKTOP_KEY_ROOT = Path(os.environ.get("WEBOCR_KEY_ROOT") or os.environ.get("KEY
 PRODUCT_MANAGER_ROOT = Path(os.environ.get("WEBOCR_PRODUCT_MANAGER_ROOT") or (Path.home() / "Desktop" / "ProductManager"))
 PRODUCT_MANAGER_DB = PRODUCT_MANAGER_ROOT / "data" / "products.db"
 
-for directory in (UPLOAD_ROOT, LOGO_ROOT, JOBS_ROOT, SEED_ROOT, EXPORT_ROOT, MARKET_KEY_ROOT):
+for directory in (UPLOAD_ROOT, LOGO_ROOT, JOBS_ROOT, SEED_ROOT, EXPORT_ROOT, EMERGENCY_ROOT, MARKET_KEY_ROOT):
     directory.mkdir(parents=True, exist_ok=True)
 
 ACTIVE_PROCESSES: dict[str, list[subprocess.Popen]] = {}
@@ -1447,7 +1448,83 @@ def resolve_seed_path(value: str) -> Path:
     return path
 
 
-def seed_summary(path: Path) -> dict:
+def seed_progress_summary(payload: dict, upload_index: dict[str, list[dict]] | None = None) -> dict:
+    products = payload.get("products") if isinstance(payload.get("products"), list) else []
+    product_count = len(products)
+    gs_codes = [text_value(item.get("gs")).upper() for item in products if isinstance(item, dict) and text_value(item.get("gs"))]
+    keyword_products = 0
+    keyword_channels = 0
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        market_keywords = product.get("marketKeywords") if isinstance(product.get("marketKeywords"), dict) else {}
+        filled = [
+            key for key, value in market_keywords.items()
+            if isinstance(value, dict) and (text_value(value.get("title")) or text_value(value.get("searchTerms")) or value.get("tags"))
+        ]
+        if filled:
+            keyword_products += 1
+            keyword_channels += len(filled)
+
+    upload_items: list[dict] = []
+    if upload_index:
+        for gs in gs_codes:
+            upload_items.extend(upload_index.get(gs, []))
+    upload_total = len(upload_items)
+    upload_done = sum(1 for item in upload_items if text_value(item.get("status")) in {"uploaded", "skipped", "exported"})
+    upload_failed = sum(1 for item in upload_items if text_value(item.get("status")) == "failed")
+    by_channel: dict[str, dict] = {}
+    for item in upload_items:
+        channel = text_value(item.get("channelKey") or item.get("channel"))
+        if not channel:
+            continue
+        bucket = by_channel.setdefault(channel, {"total": 0, "done": 0, "failed": 0, "status": "대기"})
+        bucket["total"] += 1
+        status = text_value(item.get("status"))
+        if status in {"uploaded", "skipped", "exported"}:
+            bucket["done"] += 1
+        if status == "failed":
+            bucket["failed"] += 1
+    for bucket in by_channel.values():
+        if bucket["failed"]:
+            bucket["status"] = "실패 있음"
+        elif bucket["done"] and bucket["done"] >= bucket["total"]:
+            bucket["status"] = "완료"
+        elif bucket["done"]:
+            bucket["status"] = "일부 완료"
+
+    if upload_failed:
+        badge = f"실패 {upload_failed} · 업로드 {upload_done}/{upload_total}"
+        state = "failed"
+    elif upload_total and upload_done >= upload_total:
+        badge = f"업로드 완료 {upload_done}/{upload_total}"
+        state = "uploaded"
+    elif upload_total:
+        badge = f"업로드 {upload_done}/{upload_total}"
+        state = "partial-upload"
+    elif product_count and keyword_products >= product_count:
+        badge = "키워드 완료"
+        state = "keyworded"
+    else:
+        badge = "전처리 완료"
+        state = "seeded"
+
+    return {
+        "state": state,
+        "badge": badge,
+        "productCount": product_count,
+        "keywordProducts": keyword_products,
+        "keywordChannels": keyword_channels,
+        "uploadTotal": upload_total,
+        "uploadDone": upload_done,
+        "uploadFailed": upload_failed,
+        "channels": by_channel,
+        "sourceFile": text_value((payload.get("sourceFilter") or {}).get("sourceFile")) if isinstance(payload.get("sourceFilter"), dict) else "",
+        "pipelineOutput": text_value((payload.get("pipelineResult") or {}).get("output_file")) if isinstance(payload.get("pipelineResult"), dict) else "",
+    }
+
+
+def seed_summary(path: Path, upload_index: dict[str, list[dict]] | None = None) -> dict:
     payload = hydrate_seed_payload(read_json(path, {}))
     products = payload.get("products") if isinstance(payload.get("products"), list) else []
     first = products[0] if products else {}
@@ -1461,14 +1538,20 @@ def seed_summary(path: Path) -> dict:
         "size": path.stat().st_size,
         "thumbnail": images.get("representative") or images.get("sourceThumb") or "",
         "path": str(path),
+        "progress": seed_progress_summary(payload, upload_index),
     }
 
 
 def list_seed_summaries() -> list[dict]:
     items = []
+    upload_index: dict[str, list[dict]] = {}
+    for item in collect_upload_history():
+        gs = text_value(item.get("gs")).upper()
+        if gs:
+            upload_index.setdefault(gs, []).append(item)
     for path in sorted(SEED_ROOT.glob("*.webseed.json"), key=lambda p: p.stat().st_mtime, reverse=True):
         try:
-            items.append(seed_summary(path))
+            items.append(seed_summary(path, upload_index))
         except Exception:
             continue
     return items
@@ -3824,7 +3907,7 @@ def bridge_args(source_path: str, settings: dict) -> list[str]:
         "--b-tag-count", str(settings.get("BTagCount", 14)),
         "--phase", phase,
         "--export-root", str(EXPORT_ROOT),
-        "--model", str(settings.get("Model", "claude-sonnet-4-6")),
+        "--model", str(settings.get("Model", "gpt-4.1-mini")),
         "--chunk-size", str(settings.get("ChunkSize", 10)),
         "--keyword-version", str(settings.get("KeywordVersion", "3.0")),
     ]
@@ -4408,7 +4491,6 @@ def run_automation_job(job_id: str, payload: dict) -> None:
     job = read_json(job_path, {"jobId": job_id})
     batch_size = max(1, min(100, int(payload.get("batchSize") or 20)))
     run_count = max(1, min(50, int(payload.get("runCount") or 1)))
-    total_limit = batch_size * run_count
     suppliers = payload.get("suppliers") if isinstance(payload.get("suppliers"), list) else []
     upload_date = text_value(payload.get("upload_date"))
     sort_order = text_value(payload.get("sort_order")) or "latest"
@@ -4424,20 +4506,59 @@ def run_automation_job(job_id: str, payload: dict) -> None:
         "progressPercent": 2,
         "currentStage": "자동화 대상 수집",
         "batchSize": batch_size,
+        "countPerSupplier": batch_size,
         "runCount": run_count,
+        "selectedSupplierCount": len(suppliers),
+        "expectedPerRun": len(suppliers) * batch_size,
+        "expectedTotal": len(suppliers) * batch_size * run_count,
         "updatedAt": now_text(),
     })
     write_json(job_path, job)
 
     try:
-        skus = pm_select_automation_skus(suppliers, upload_date, sort_order, filter_mode, total_limit)
-        if not skus:
+        selected_batches = pm_select_automation_sku_batches(suppliers, upload_date, sort_order, filter_mode, batch_size, run_count)
+        skus = [sku for batch in selected_batches for sku in batch]
+        if not selected_batches:
             raise ValueError("자동화 대상 SKU가 없습니다.")
-        selected_batches = [skus[i:i + batch_size] for i in range(0, min(len(skus), total_limit), batch_size)]
 
         with log_path.open("w", encoding="utf-8", errors="replace") as log:
             log.write(f"[{now_text()}] START automationPrepare\n")
-            log.write(f"batchSize={batch_size} runCount={run_count} selectedSku={len(skus)} channels={channels}\n")
+            log.write(f"countPerSupplier={batch_size} suppliers={len(suppliers)} runCount={run_count} selectedSku={len(skus)} channels={channels}\n")
+
+        def run_child_with_parent_status(child_job_id: str, runner, runner_payload: dict, parent_stage: str, progress_start: int, progress_end: int) -> dict:
+            child_path = JOBS_ROOT / f"{child_job_id}.json"
+            thread = threading.Thread(target=runner, args=(child_job_id, runner_payload), daemon=True)
+            thread.start()
+            last_tail: list[str] = []
+            while thread.is_alive():
+                if job_id in CANCELLED_JOB_IDS:
+                    with ACTIVE_PROCESS_LOCK:
+                        child_processes = list(ACTIVE_PROCESSES.get(child_job_id) or [])
+                    for process in child_processes:
+                        stop_process_tree(process)
+                    CANCELLED_JOB_IDS.add(child_job_id)
+                    break
+                child = read_json(child_path, {})
+                child_progress = int(child.get("progressPercent") or 0)
+                mapped = progress_start + int((progress_end - progress_start) * min(max(child_progress, 0), 100) / 100)
+                tail = child.get("tail") if isinstance(child.get("tail"), list) else []
+                if tail:
+                    last_tail = tail[-8:]
+                parent = read_json(job_path, job)
+                parent.update({
+                    "status": "running",
+                    "progressPercent": max(3, min(98, mapped)),
+                    "currentStage": f"{parent_stage} · {child.get('currentStage') or child.get('status') or '진행 중'}",
+                    "childJobId": child_job_id,
+                    "childProgressPercent": child_progress,
+                    "currentGs": child.get("currentGs", parent.get("currentGs", "")),
+                    "tail": last_tail,
+                    "updatedAt": now_text(),
+                })
+                write_json(job_path, parent)
+                time.sleep(2)
+            thread.join()
+            return read_json(child_path, {})
 
         for index, batch_skus in enumerate(selected_batches, start=1):
             if job_id in CANCELLED_JOB_IDS:
@@ -4469,13 +4590,12 @@ def run_automation_job(job_id: str, payload: dict) -> None:
                 "createdAt": now_text(),
                 "parentJobId": job_id,
             })
-            run_seed_job(seed_job_id, {
+            seed_job = run_child_with_parent_status(seed_job_id, run_seed_job, {
                 "sourcePath": str(csv_path),
                 "sourceFilePath": str(csv_path),
                 "selectedGs": selected_gs,
                 "listingImageSettings": settings,
-            })
-            seed_job = read_json(seed_job_path, {})
+            }, f"{index}/{len(selected_batches)} 배치 소스 CSV/전처리", progress_base + 3, progress_base + 34)
             if seed_job.get("status") != "completed":
                 raise RuntimeError(f"{index}번 배치 시드 생성 실패: {seed_job.get('error') or 'unknown error'}")
             seed_path = text_value((seed_job.get("result") or {}).get("seedPath"))
@@ -4500,7 +4620,7 @@ def run_automation_job(job_id: str, payload: dict) -> None:
                     "updatedAt": now_text(),
                 })
                 write_json(job_path, job)
-                run_keyword_job(keyword_job_id, {
+                keyword_job = run_child_with_parent_status(keyword_job_id, run_keyword_job, {
                     "seedPath": seed_path,
                     "selectedGs": selected_gs,
                     "channels": channels,
@@ -4508,8 +4628,7 @@ def run_automation_job(job_id: str, payload: dict) -> None:
                     "concurrency": 50,
                     "keywordProductChunkSize": KEYWORD_PRODUCT_CHUNK_SIZE,
                     "keywordStallSeconds": KEYWORD_CODEX_STALL_SECONDS,
-                })
-                keyword_job = read_json(keyword_job_path, {})
+                }, f"{index}/{len(selected_batches)} 배치 키워드 생성", progress_base + 35, progress_base + 92)
                 if keyword_job.get("status") != "completed":
                     raise RuntimeError(f"{index}번 배치 키워드 생성 실패: {keyword_job.get('error') or 'unknown error'}")
 
@@ -4523,6 +4642,8 @@ def run_automation_job(job_id: str, payload: dict) -> None:
                 "seedPath": seed_path,
                 "seedFileName": Path(seed_path).name if seed_path else "",
                 "status": "completed",
+                "supplierCount": len(suppliers),
+                "countPerSupplier": batch_size,
             }
             batches.append(batch_result)
             job = read_json(job_path, job)
@@ -4544,6 +4665,8 @@ def run_automation_job(job_id: str, payload: dict) -> None:
                 "totalBatches": len(batches),
                 "totalSkus": sum(item.get("skuCount", 0) for item in batches),
                 "totalGs": sum(item.get("gsCount", 0) for item in batches),
+                "supplierCount": len(suppliers),
+                "countPerSupplier": batch_size,
                 "seedPaths": [item.get("seedPath") for item in batches if item.get("seedPath")],
             },
         })
@@ -5887,6 +6010,131 @@ def find_active_market_upload_job() -> str:
     return ""
 
 
+def latest_market_upload_job() -> dict:
+    for path in sorted(JOBS_ROOT.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True):
+        try:
+            job = read_json(path, {})
+        except Exception:
+            continue
+        if job.get("action") == "marketUpload":
+            return job
+    return {}
+
+
+def write_emergency_codex_context(payload: dict) -> dict:
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    emergency_id = f"upload_{stamp}_{uuid.uuid4().hex[:6]}"
+    target = EMERGENCY_ROOT / emergency_id
+    target.mkdir(parents=True, exist_ok=True)
+
+    upload_payload = payload.get("uploadPayload") if isinstance(payload.get("uploadPayload"), dict) else {}
+    rows = upload_payload.get("rows") if isinstance(upload_payload.get("rows"), list) else []
+    history = payload.get("history") if isinstance(payload.get("history"), dict) else {}
+    status = payload.get("uploadStatus") if isinstance(payload.get("uploadStatus"), dict) else {}
+    latest_job = latest_market_upload_job() if not rows else {}
+    job_id = text_value(payload.get("jobId") or latest_job.get("jobId"))
+    job = read_json(JOBS_ROOT / f"{safe_name(job_id, '')}.json", latest_job) if job_id else latest_job
+    results = []
+    if isinstance(job.get("results"), list):
+        results.extend(job.get("results") or [])
+    if isinstance(job.get("result"), dict) and isinstance(job["result"].get("results"), list):
+        results.extend(job["result"].get("results") or [])
+
+    markets: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        channel = text_value(row.get("channel") or row.get("channelKey"))
+        bucket = markets.setdefault(channel, {"requested": 0, "uploaded": 0, "failed": 0, "exported": 0, "queued": 0})
+        bucket["requested"] += 1
+        key = text_value(row.get("queueKey") or f"{channel}:{row.get('gs')}")
+        row_status = text_value(status.get(key) or (history.get(key) or {}).get("status") or "queued")
+        if row_status in bucket:
+            bucket[row_status] += 1
+        else:
+            bucket["queued"] += 1
+
+    for result in results:
+        if not isinstance(result, dict):
+            continue
+        channel = text_value(result.get("channel") or result.get("channelKey"))
+        if not channel:
+            continue
+        bucket = markets.setdefault(channel, {"requested": 0, "uploaded": 0, "failed": 0, "exported": 0, "queued": 0})
+        result_status = text_value(result.get("status"))
+        if result_status in bucket:
+            bucket[result_status] += 1
+
+    context = {
+        "id": emergency_id,
+        "createdAt": now_text(),
+        "seedName": text_value(payload.get("seedName")),
+        "seedPath": text_value(payload.get("seedPath")),
+        "jobId": job_id,
+        "job": job,
+        "uploadPayload": upload_payload,
+        "uploadStatus": status,
+        "history": history,
+        "results": results,
+        "markets": markets,
+    }
+    write_json(target / "upload_context.json", context)
+
+    lines = [
+        "# 긴급 업로드 복구 컨텍스트",
+        "",
+        f"- 생성시각: {context['createdAt']}",
+        f"- 시드: {context['seedName'] or '-'}",
+        f"- 시드 경로: {context['seedPath'] or '-'}",
+        f"- 업로드 Job: {job_id or '-'}",
+        f"- 대상 행: {len(rows)}",
+        "",
+        "## 마켓별 상태",
+    ]
+    if markets:
+        for channel, item in sorted(markets.items()):
+            lines.append(f"- {channel}: 요청 {item.get('requested', 0)} / 완료 {item.get('uploaded', 0)} / 실패 {item.get('failed', 0)} / 엑셀 {item.get('exported', 0)} / 대기 {item.get('queued', 0)}")
+    else:
+        lines.append("- 현재 업로드 대기열 정보가 없습니다.")
+    lines.extend([
+        "",
+        "## 복구 선택지",
+        "1. API 업로드 성공 상품만 삭제/판매중지 계획 생성",
+        "2. 실패 상품만 재시도 계획 생성",
+        "3. 특정 마켓만 롤백 계획 생성",
+        "4. 업로드 파일/로그 보고서 생성",
+        "기타. 사용자가 직접 입력한 지시를 우선한다.",
+        "",
+        "삭제/판매중지 작업은 바로 실행하지 말고 반드시 계획을 먼저 보여주고 확인을 받은 뒤 실행한다.",
+    ])
+    (target / "context.md").write_text("\n".join(lines), encoding="utf-8")
+    (target / "rollback_plan.md").write_text(
+        "1. upload_context.json의 results에서 productId/sellerProductId/spdNo를 확인한다.\n"
+        "2. 사용자가 지정한 마켓/상품 범위만 필터링한다.\n"
+        "3. 삭제 또는 판매중지 가능 API와 엑셀 수동 처리 대상을 분리한다.\n"
+        "4. 실행 전 대상 목록을 사용자에게 확인받는다.\n",
+        encoding="utf-8",
+    )
+    return {
+        "ok": True,
+        "id": emergency_id,
+        "contextPath": str(target / "context.md"),
+        "contextJsonPath": str(target / "upload_context.json"),
+        "summary": {
+            "seedName": context["seedName"],
+            "jobId": job_id,
+            "rowCount": len(rows),
+            "markets": markets,
+        },
+        "options": [
+            "API 업로드 성공 상품만 삭제/판매중지 계획 생성",
+            "실패 상품만 재시도 계획 생성",
+            "특정 마켓만 롤백 계획 생성",
+            "업로드 파일/로그 보고서 생성",
+        ],
+    }
+
+
 def write_market_export(payload: dict) -> dict:
     entries = normalize_upload_entries(payload)
     market = safe_name(text_value(payload.get("market") or "market"), "market")
@@ -6211,6 +6459,44 @@ def pm_select_automation_skus(
         999999,
     )
     return [text_value(item.get("sku_group")) for item in result.get("products", []) if text_value(item.get("sku_group"))]
+
+
+def pm_select_automation_sku_batches(
+    suppliers: list[str],
+    upload_date: str = "",
+    sort_order: str = "latest",
+    filter_mode: str = "available",
+    count_per_supplier: int = 20,
+    run_count: int = 1,
+) -> list[list[str]]:
+    result = pm_get_products_paginated(
+        suppliers,
+        upload_date,
+        sort_order,
+        filter_mode,
+        "",
+        1,
+        999999,
+        max(1, int(count_per_supplier or 20)) * max(1, int(run_count or 1)),
+    )
+    by_supplier: dict[str, list[str]] = {}
+    for item in result.get("products", []):
+        supplier = text_value(item.get("supplier_code"))
+        sku = text_value(item.get("sku_group"))
+        if supplier and sku:
+            by_supplier.setdefault(supplier, []).append(sku)
+
+    batches: list[list[str]] = []
+    per_supplier = max(1, int(count_per_supplier or 20))
+    for run_index in range(max(1, int(run_count or 1))):
+        batch: list[str] = []
+        start = run_index * per_supplier
+        end = start + per_supplier
+        for supplier in suppliers:
+            batch.extend(by_supplier.get(text_value(supplier), [])[start:end])
+        if batch:
+            batches.append(batch)
+    return batches
 
 
 def pm_get_available_products(suppliers: list[str], sort_order: str = "latest",
@@ -6552,6 +6838,10 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/market-upload":
                 self.handle_market_upload()
+                return
+            if path == "/api/emergency-codex-context":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                self.send_json(write_emergency_codex_context(payload))
                 return
             if path == "/api/excel-export":
                 self.handle_excel_export()

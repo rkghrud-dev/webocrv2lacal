@@ -1059,6 +1059,29 @@ function TopBar({ source, onImport, onReset, onSettings }) {
 }
 
 /* ── sidebar ──────────────────────────────────────────────── */
+function seedDateGroupKey(value) {
+  const text = String(value || '').trim();
+  const match = text.match(/20\d{2}-\d{2}-\d{2}/);
+  return match ? match[0] : '날짜 없음';
+}
+
+function seedTooltipLines(seed) {
+  const progress = seed?.progress || {};
+  const channels = progress.channels || {};
+  const channelLines = Object.entries(channels).slice(0, 8).map(([channel, item]) =>
+    `${channel}: ${item.done || 0}/${item.total || 0}${item.failed ? ` 실패 ${item.failed}` : ''} · ${item.status || '대기'}`
+  );
+  return [
+    `생성: ${seed?.createdAt || '-'}`,
+    `상품: ${seed?.rows || 0}개 / GS ${seed?.gsCodes || 0}개`,
+    `전처리: 완료`,
+    `키워드: ${progress.keywordProducts || 0}/${progress.productCount || seed?.gsCodes || 0} 상품 · 채널 ${progress.keywordChannels || 0}`,
+    `업로드: ${progress.uploadDone || 0}/${progress.uploadTotal || 0}${progress.uploadFailed ? ` · 실패 ${progress.uploadFailed}` : ''}`,
+    ...channelLines,
+    progress.pipelineOutput ? `전처리 파일: ${progress.pipelineOutput.split(/[\\/]/).pop()}` : '',
+  ].filter(Boolean);
+}
+
 function Sidebar({
   source,
   seedFiles = [],
@@ -1067,8 +1090,27 @@ function Sidebar({
   onRenameSeed,
   onDeleteSeed,
 }) {
-  const [seedOpen, setSeedOpen] = useState(false);
+  const [seedOpen, setSeedOpen] = useState(true);
   const [seedMenu, setSeedMenu] = useState(null);
+  const seedGroups = React.useMemo(() => {
+    const groups = [];
+    const byDate = new Map();
+    (seedFiles || []).forEach((seed) => {
+      const key = seedDateGroupKey(seed.createdAt);
+      if (!byDate.has(key)) {
+        const item = { date: key, seeds: [] };
+        byDate.set(key, item);
+        groups.push(item);
+      }
+      byDate.get(key).seeds.push(seed);
+    });
+    return groups;
+  }, [seedFiles]);
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const [openSeedDates, setOpenSeedDates] = useState(() => ({ [todayKey]: true }));
+  useEffect(() => {
+    setOpenSeedDates((current) => current && Object.keys(current).length ? current : { [todayKey]: true });
+  }, [todayKey]);
   useEffect(() => {
     if (!seedMenu) return undefined;
     const close = () => setSeedMenu(null);
@@ -1107,25 +1149,43 @@ function Sidebar({
           <div className="seed-panel">
             <div className="seed-store-path">{seedStorePath}</div>
             <div className="seed-list">
-              {seedFiles.length > 0 ? seedFiles.map((seed) => (
-                <button
-                  type="button"
-                  className="seed-item"
-                  key={seed.id}
-                  onClick={() => onLoadSeed?.(seed)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setSeedMenu({ seed, x: e.clientX, y: e.clientY });
-                  }}
-                  title={seed.path}>
-                  <ProductThumb src={seed.thumbnail} compact/>
-                  <span className="seed-item-text">
-                    <span className="seed-date">{seed.createdAt}</span>
-                    <strong>{seed.name}</strong>
-                    <small>{seed.rows}행 · GS {seed.gsCodes}개</small>
-                  </span>
-                </button>
-              )) : (
+              {seedFiles.length > 0 ? seedGroups.map((group) => {
+                const expanded = openSeedDates[group.date] !== false;
+                return (
+                  <div className="seed-date-group" key={group.date}>
+                    <button
+                      type="button"
+                      className="seed-date-toggle"
+                      onClick={() => setOpenSeedDates((current) => ({ ...current, [group.date]: !expanded }))}>
+                      <span>{group.date}</span>
+                      <b>{group.seeds.length}개</b>
+                    </button>
+                    {expanded && group.seeds.map((seed) => (
+                      <button
+                        type="button"
+                        className={`seed-item seed-state-${seed.progress?.state || 'seeded'}`}
+                        key={seed.id}
+                        onClick={() => onLoadSeed?.(seed)}
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          setSeedMenu({ seed, x: e.clientX, y: e.clientY });
+                        }}
+                        title={seed.path}>
+                        <ProductThumb src={seed.thumbnail} compact/>
+                        <span className="seed-item-text">
+                          <span className="seed-date">{seed.createdAt}</span>
+                          <strong>{seed.name}</strong>
+                          <small>{seed.rows}행 · GS {seed.gsCodes}개</small>
+                          <span className="seed-status-badge">{seed.progress?.badge || '전처리 완료'}</span>
+                        </span>
+                        <span className="seed-hover-card">
+                          {seedTooltipLines(seed).map((line, index) => <span key={index}>{line}</span>)}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                );
+              }) : (
                 <div className="seed-empty">생성된 시드 파일 없음</div>
               )}
             </div>
@@ -3156,6 +3216,8 @@ function MarketUploadWorkbench({
   options,
   activeChannel,
   onChannelChange,
+  seedName = '',
+  seedPath = '',
   uploadQueue = {},
   history = {},
   onUploadHistoryChange,
@@ -3166,6 +3228,9 @@ function MarketUploadWorkbench({
   const [currentUploadJobId, setCurrentUploadJobId] = useState('');
   const [apiDuplicateCheck, setApiDuplicateCheck] = useState(true);
   const [parallelAccounts, setParallelAccounts] = useState(true);
+  const [emergencyContext, setEmergencyContext] = useState(null);
+  const [emergencyNote, setEmergencyNote] = useState('');
+  const [emergencyBusy, setEmergencyBusy] = useState(false);
   const scopedChannels = Object.entries(marketSelection || {})
     .filter(([, enabled]) => enabled !== false)
     .filter(([key]) => !key.endsWith(':Cafe24'))
@@ -3598,6 +3663,35 @@ function MarketUploadWorkbench({
       });
     }
   };
+  const openEmergencyCodex = async () => {
+    if (emergencyBusy) return;
+    const entries = buildSelectedEntries(() => true);
+    const uploadPayload = storeUploadPayload(entries, 'emergencyCodexContext');
+    setEmergencyBusy(true);
+    try {
+      const response = await fetch('/api/emergency-codex-context', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          seedName,
+          seedPath,
+          jobId: currentUploadJobId,
+          uploadPayload,
+          uploadStatus,
+          history,
+          note: emergencyNote,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result?.ok) throw new Error(result?.error || `emergency ${response.status}`);
+      setEmergencyContext(result);
+      onRuntimeArtifact?.({ path: result.contextPath });
+    } catch (error) {
+      setEmergencyContext({ ok: false, error: error.message });
+    } finally {
+      setEmergencyBusy(false);
+    }
+  };
 
   return (
     <div className="market-upload-workbench">
@@ -3622,6 +3716,37 @@ function MarketUploadWorkbench({
           <span><b>{selectedCount}</b>선택</span>
           <span><b>{apiSelectedCount}</b>API</span>
           <span><b>{excelSelectedCount}</b>Excel</span>
+        </div>
+        <div className="emergency-box">
+          <div className="emergency-box__head">
+            <div>
+              <b>긴급 복구 Codex</b>
+              <small>현재 업로드 대기열, 상태, 최근 Job 로그를 복구 컨텍스트로 묶습니다.</small>
+            </div>
+            <GhostBtn icon={<IconCmd size={16}/>} onClick={openEmergencyCodex} disabled={emergencyBusy || !uploadRows.length}>
+              {emergencyBusy ? '준비 중' : '긴급 복구 열기'}
+            </GhostBtn>
+          </div>
+          {emergencyContext && (
+            <div className={`emergency-context ${emergencyContext.ok === false ? 'is-error' : ''}`}>
+              {emergencyContext.ok === false ? (
+                <span>{emergencyContext.error}</span>
+              ) : (
+                <>
+                  <strong>복구 컨텍스트 생성됨</strong>
+                  <small>{emergencyContext.contextPath}</small>
+                  <ol>
+                    {(emergencyContext.options || []).map((option, index) => <li key={option}>{index + 1}. {option}</li>)}
+                  </ol>
+                  <textarea
+                    value={emergencyNote}
+                    onChange={(e) => setEmergencyNote(e.target.value)}
+                    placeholder="기타 지시: 예) 네이버만 삭제 계획 잡아줘, 쿠팡은 건드리지 마"
+                    rows="2"/>
+                </>
+              )}
+            </div>
+          )}
         </div>
       </section>
 

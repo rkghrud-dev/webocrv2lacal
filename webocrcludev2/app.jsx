@@ -159,6 +159,18 @@ async function fetchSeedPayload(path) {
   return payload.seed;
 }
 
+function formatRelativeAge(value) {
+  if (!value) return '';
+  const normalized = String(value).replace(' ', 'T');
+  const time = new Date(normalized).getTime();
+  if (!Number.isFinite(time)) return value;
+  const seconds = Math.max(0, Math.round((Date.now() - time) / 1000));
+  if (seconds < 60) return `${seconds}초 전`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}분 전`;
+  return `${Math.round(minutes / 60)}시간 전`;
+}
+
 function rowsForFile(file) {
   const preview = file?.preview || [];
   if (!preview.length) return [];
@@ -571,7 +583,7 @@ function AutomationPrepWorkbench({ addLog, onSeedsChange }) {
     };
     setRunning(true);
     setJob({ status: 'queued', progressPercent: 1, currentStage: '자동화 작업 요청 중' });
-    addLog(`자동화 시작: ${payload.batchSize}개씩 ${payload.runCount}회, 최대 ${payload.batchSize * payload.runCount}개`);
+    addLog(`자동화 시작: 사업자 ${selectedSuppliers.size}개 · 사업자당 ${payload.batchSize}개 · ${payload.runCount}회 · 최대 ${selectedSuppliers.size * payload.batchSize * payload.runCount}개`);
     try {
       const response = await fetch('/api/automation-prepare', {
         method: 'POST',
@@ -613,8 +625,12 @@ function AutomationPrepWorkbench({ addLog, onSeedsChange }) {
   if (pmAvailable === null) return h('div', {className: 'surface pad-md'}, '연결 확인 중...');
   if (!pmAvailable) return h('div', {className: 'surface pad-md color-muted'}, 'ProductManager DB를 찾을 수 없습니다.');
 
-  const expectedTotal = Number(batchSize || 0) * Number(runCount || 0);
+  const selectedSupplierCount = selectedSuppliers.size;
+  const perRunTotal = selectedSupplierCount * Number(batchSize || 0);
+  const expectedTotal = perRunTotal * Number(runCount || 0);
   const progress = Number(job?.progressPercent || 0);
+  const staleSeconds = job?.updatedAt ? Math.max(0, Math.round((Date.now() - new Date(String(job.updatedAt).replace(' ', 'T')).getTime()) / 1000)) : 0;
+  const staleWarning = running && staleSeconds > 90;
   return h('div', {className: 'automation-prep surface'},
     h('div', {className: 'automation-grid'},
       h('label', null, '날짜',
@@ -630,11 +646,11 @@ function AutomationPrepWorkbench({ addLog, onSeedsChange }) {
           h('option', {value: 'random'}, '랜덤'),
         ),
       ),
-      h('label', null, '배치당 처리 개수',
+      h('label', null, '사업자당 1회 처리 개수',
         h('input', {type: 'number', className: 'pm-input-sm automation-input', min: 1, max: 100, value: batchSize, disabled: running,
           onChange: e => setBatchSize(Math.max(1, Math.min(100, Number(e.target.value || 20))))}),
       ),
-      h('label', null, '반복 횟수',
+      h('label', null, '반복 실행 횟수',
         h('input', {type: 'number', className: 'pm-input-sm automation-input', min: 1, max: 50, value: runCount, disabled: running,
           onChange: e => setRunCount(Math.max(1, Math.min(50, Number(e.target.value || 1))))}),
       ),
@@ -670,8 +686,10 @@ function AutomationPrepWorkbench({ addLog, onSeedsChange }) {
       ),
     ),
     h('div', {className: 'automation-summary'},
-      h('div', null, h('small', null, '예상 처리'), h('strong', null, `${expectedTotal.toLocaleString()}개`)),
-      h('div', null, h('small', null, '결과'), h('strong', null, `${Math.ceil(expectedTotal / Math.max(1, Number(batchSize || 1))).toLocaleString()}개 시드`)),
+      h('div', null, h('small', null, '선택 사업자'), h('strong', null, `${selectedSupplierCount.toLocaleString()}개`)),
+      h('div', null, h('small', null, '1회 처리량'), h('strong', null, `${perRunTotal.toLocaleString()}개`)),
+      h('div', null, h('small', null, '전체 예상 처리'), h('strong', null, `${expectedTotal.toLocaleString()}개`)),
+      h('div', null, h('small', null, '예상 시드'), h('strong', null, `${Number(runCount || 0).toLocaleString()}개`)),
       h('div', null, h('small', null, '상태'), h('strong', null, job?.currentStage || '대기')),
       h('div', {className: 'automation-actions'},
         running
@@ -683,7 +701,14 @@ function AutomationPrepWorkbench({ addLog, onSeedsChange }) {
       h('div', {className: 'automation-progress-track'}, h('span', {style: {width: `${progress}%`}})),
       h('div', {className: 'automation-job-meta'},
         h('span', null, job.jobId ? `Job ${job.jobId}` : '대기'),
+        job.currentBatch && h('span', null, `${job.currentBatch}/${job.runCount || runCount}회차`),
+        job.currentGs && h('span', null, `현재 ${job.currentGs}`),
+        job.updatedAt && h('span', {className: staleWarning ? 'is-stale' : ''}, `갱신 ${formatRelativeAge(job.updatedAt)}`),
         h('span', null, `${progress}%`),
+      ),
+      staleWarning && h('div', {className: 'automation-stale-warning'}, '최근 90초 이상 상태 갱신이 없습니다. 하위 프로세스나 API 응답 지연을 확인하세요.'),
+      Array.isArray(job.tail) && job.tail.length > 0 && h('div', {className: 'automation-tail'},
+        ...job.tail.slice(-5).map((line, index) => h('code', {key: index}, line)),
       ),
       Array.isArray(job.batches) && job.batches.length > 0 && h('div', {className: 'automation-batches'},
         ...job.batches.map(item => h('div', {key: item.index, className: 'automation-batch-item'},
@@ -1694,7 +1719,7 @@ function App() {
                         <ProductThumb src={seed.thumbnail} compact/>
                         <div className="seed-picker-info">
                           <strong>{seed.name}</strong>
-                          <small>{seed.createdAt} · {seed.rows}행 · GS {seed.gsCodes}개</small>
+                          <small>{seed.createdAt} · {seed.rows}행 · GS {seed.gsCodes}개 · {seed.progress?.badge || '전처리 완료'}</small>
                         </div>
                       </button>
                     ))}
@@ -1861,6 +1886,8 @@ function App() {
                 options={keywordOptions}
                 activeChannel={activeChannel}
                 onChannelChange={setActiveChannel}
+                seedName={file?.name || source?.name || ''}
+                seedPath={file?.sourcePath || source?.sourcePath || ''}
                 uploadQueue={uploadQueue}
                 history={uploadHistory}
                 onRuntimeArtifact={rememberSessionArtifact}

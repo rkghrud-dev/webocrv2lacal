@@ -82,7 +82,7 @@ def main() -> int:
     parser.add_argument('--b-tag-count', default='14')
     parser.add_argument('--phase', default='full', choices=['full', 'images', 'analysis', 'ocr_only'])
     parser.add_argument('--export-root', default='')
-    parser.add_argument('--model', default='claude-sonnet-4-6')
+    parser.add_argument('--model', default='gpt-4.1-mini')
     parser.add_argument('--chunk-size', default='10')
     parser.add_argument('--keyword-version', default='3.0')
     args = parser.parse_args()
