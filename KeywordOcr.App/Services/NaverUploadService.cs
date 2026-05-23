@@ -40,6 +40,9 @@ public sealed record NaverUploadResult(
 /// </summary>
 public sealed class NaverUploadService
 {
+    private const string DefaultBrandName = "샤플라이";
+    private const string DetailReferenceText = "상세페이지 참조";
+
     public async Task<NaverUploadResult> UploadAsync(
         string sourcePath,
         NaverUploadOptions options,
@@ -386,6 +389,17 @@ public sealed class NaverUploadService
         var sellerCode = ExtractGsCode(row)
             .OrIfEmpty(GetStr(row, "판매자내부상품번호"))
             .OrIfEmpty(GetStr(row, "자체 상품코드"));
+        var productInfoProvidedNotice = BuildProductInfoProvidedNotice(row, productName, sellerCode);
+        var noticeFields = ExtractProvidedNoticeFields(productInfoProvidedNotice);
+        var brandName = NormalizeBrandName(GetStr(row, "브랜드"));
+        var manufacturerName = FirstNonEmpty(
+            noticeFields.GetValueOrDefault("manufacturer"),
+            noticeFields.GetValueOrDefault("importer"),
+            DetailReferenceText);
+        var importerName = FirstNonEmpty(
+            noticeFields.GetValueOrDefault("importer"),
+            noticeFields.GetValueOrDefault("manufacturer"),
+            DetailReferenceText);
 
         // 검색 태그
         var rawTags = GetStr(row, "홈런_네이버태그")
@@ -433,8 +447,8 @@ public sealed class NaverUploadService
                 },
                 ["naverShoppingSearchInfo"] = new JsonObject
                 {
-                    ["manufacturerName"] = "상세페이지 참조",
-                    ["brandName"] = "",
+                    ["manufacturerName"] = manufacturerName,
+                    ["brandName"] = brandName,
                 },
                 ["afterServiceInfo"] = new JsonObject
                 {
@@ -444,11 +458,11 @@ public sealed class NaverUploadService
                 ["originAreaInfo"] = new JsonObject
                 {
                     ["originAreaCode"] = "0200037",
-                    ["importer"] = "상세페이지 참조",
+                    ["importer"] = importerName,
                     ["content"] = "상세설명 참조",
                     ["plural"] = false,
                 },
-                ["productInfoProvidedNotice"] = BuildProductInfoProvidedNotice(row, productName, sellerCode),
+                ["productInfoProvidedNotice"] = productInfoProvidedNotice,
                 ["unitCapacity"] = new JsonObject
                 {
                     ["unitPriceYn"] = false,
@@ -569,7 +583,7 @@ public sealed class NaverUploadService
 
     private static JsonObject BuildDefaultProvidedNotice(string productName, string sellerCode)
     {
-        var itemName = string.IsNullOrWhiteSpace(productName) ? "상품상세 참조" : productName;
+        var itemName = string.IsNullOrWhiteSpace(productName) ? "상세페이지 참조" : productName;
         var modelName = string.IsNullOrWhiteSpace(sellerCode) ? itemName : sellerCode;
         var noticeType = InferDefaultProvidedNoticeType(productName);
         if (noticeType is "SHOES")
@@ -579,12 +593,12 @@ public sealed class NaverUploadService
                 ["productInfoProvidedNoticeType"] = "SHOES",
                 ["shoes"] = new JsonObject
                 {
-                    ["material"] = "상품상세 참조",
-                    ["color"] = "상품상세 참조",
-                    ["size"] = "상품상세 참조",
+                    ["material"] = "상세페이지 참조",
+                    ["color"] = "상세페이지 참조",
+                    ["size"] = "상세페이지 참조",
                     ["height"] = "해당사항 없음",
-                    ["manufacturer"] = "상품상세 참조",
-                    ["caution"] = "상품상세 참조",
+                    ["manufacturer"] = "상세페이지 참조",
+                    ["caution"] = "상세페이지 참조",
                     ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
                     ["afterServiceDirector"] = "010-2324-8352",
                 },
@@ -597,11 +611,11 @@ public sealed class NaverUploadService
                 ["productInfoProvidedNoticeType"] = "WEAR",
                 ["wear"] = new JsonObject
                 {
-                    ["material"] = "상품상세 참조",
-                    ["color"] = "상품상세 참조",
-                    ["size"] = "상품상세 참조",
-                    ["manufacturer"] = "상품상세 참조",
-                    ["caution"] = "상품상세 참조",
+                    ["material"] = "상세페이지 참조",
+                    ["color"] = "상세페이지 참조",
+                    ["size"] = "상세페이지 참조",
+                    ["manufacturer"] = "상세페이지 참조",
+                    ["caution"] = "상세페이지 참조",
                     ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
                     ["afterServiceDirector"] = "010-2324-8352",
                 },
@@ -615,11 +629,11 @@ public sealed class NaverUploadService
                 ["bag"] = new JsonObject
                 {
                     ["type"] = itemName,
-                    ["material"] = "상품상세 참조",
-                    ["color"] = "상품상세 참조",
-                    ["size"] = "상품상세 참조",
-                    ["manufacturer"] = "상품상세 참조",
-                    ["caution"] = "상품상세 참조",
+                    ["material"] = "상세페이지 참조",
+                    ["color"] = "상세페이지 참조",
+                    ["size"] = "상세페이지 참조",
+                    ["manufacturer"] = "상세페이지 참조",
+                    ["caution"] = "상세페이지 참조",
                     ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
                     ["afterServiceDirector"] = "010-2324-8352",
                 },
@@ -635,14 +649,14 @@ public sealed class NaverUploadService
                     ["itemName"] = itemName,
                     ["modelName"] = modelName,
                     ["certificationType"] = "해당 없음",
-                    ["size"] = "상품상세 참조",
-                    ["weight"] = "상품상세 참조",
-                    ["color"] = "상품상세 참조",
-                    ["material"] = "상품상세 참조",
+                    ["size"] = "상세페이지 참조",
+                    ["weight"] = "상세페이지 참조",
+                    ["color"] = "상세페이지 참조",
+                    ["material"] = "상세페이지 참조",
                     ["components"] = "본품",
-                    ["releaseDateText"] = "상품상세 참조",
-                    ["manufacturer"] = "상품상세 참조",
-                    ["detailContent"] = "상품상세 참조",
+                    ["releaseDateText"] = "상세페이지 참조",
+                    ["manufacturer"] = "상세페이지 참조",
+                    ["detailContent"] = "상세페이지 참조",
                     ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
                     ["afterServiceDirector"] = "010-2324-8352",
                 },
@@ -656,10 +670,10 @@ public sealed class NaverUploadService
                 ["fashionItems"] = new JsonObject
                 {
                     ["type"] = itemName,
-                    ["material"] = "상품상세 참조",
-                    ["size"] = "상품상세 참조",
-                    ["manufacturer"] = "상품상세 참조",
-                    ["caution"] = "상품상세 참조",
+                    ["material"] = "상세페이지 참조",
+                    ["size"] = "상세페이지 참조",
+                    ["manufacturer"] = "상세페이지 참조",
+                    ["caution"] = "상세페이지 참조",
                     ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
                     ["afterServiceDirector"] = "010-2324-8352",
                 },
@@ -674,12 +688,12 @@ public sealed class NaverUploadService
                 {
                     ["itemName"] = itemName,
                     ["modelName"] = modelName,
-                    ["material"] = "상품상세 참조",
+                    ["material"] = "상세페이지 참조",
                     ["component"] = "본품",
-                    ["size"] = "상품상세 참조",
-                    ["releaseDateText"] = "상품상세 참조",
-                    ["manufacturer"] = "상품상세 참조",
-                    ["producer"] = "상품상세 참조",
+                    ["size"] = "상세페이지 참조",
+                    ["releaseDateText"] = "상세페이지 참조",
+                    ["manufacturer"] = "상세페이지 참조",
+                    ["producer"] = "상세페이지 참조",
                     ["importDeclaration"] = "해당 없음",
                     ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
                     ["afterServiceDirector"] = "010-2324-8352",
@@ -695,12 +709,12 @@ public sealed class NaverUploadService
                 {
                     ["itemName"] = itemName,
                     ["modelName"] = modelName,
-                    ["releaseDateText"] = "상품상세 참조",
+                    ["releaseDateText"] = "상세페이지 참조",
                     ["certificationType"] = "해당 없음",
-                    ["caution"] = "상품상세 참조",
-                    ["manufacturer"] = "상품상세 참조",
-                    ["size"] = "상품상세 참조",
-                    ["applyModel"] = "상품상세 참조",
+                    ["caution"] = "상세페이지 참조",
+                    ["manufacturer"] = "상세페이지 참조",
+                    ["size"] = "상세페이지 참조",
+                    ["applyModel"] = "상세페이지 참조",
                     ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
                     ["roadWorthyCertification"] = "해당 없음",
                     ["afterServiceDirector"] = "010-2324-8352",
@@ -716,14 +730,14 @@ public sealed class NaverUploadService
                 {
                     ["itemName"] = itemName,
                     ["certificationType"] = "해당 없음",
-                    ["color"] = "상품상세 참조",
+                    ["color"] = "상세페이지 참조",
                     ["components"] = "본품",
-                    ["material"] = "상품상세 참조",
-                    ["manufacturer"] = "상품상세 참조",
-                    ["importer"] = "상품상세 참조",
-                    ["producer"] = "상품상세 참조",
-                    ["size"] = "상품상세 참조",
-                    ["installedCharge"] = "상품상세 참조",
+                    ["material"] = "상세페이지 참조",
+                    ["manufacturer"] = "상세페이지 참조",
+                    ["importer"] = "상세페이지 참조",
+                    ["producer"] = "상세페이지 참조",
+                    ["size"] = "상세페이지 참조",
+                    ["installedCharge"] = "상세페이지 참조",
                     ["warrantyPolicy"] = "관련 법 및 소비자분쟁해결기준에 따름",
                     ["refurb"] = "해당 없음",
                     ["afterServiceDirector"] = "010-2324-8352",
@@ -739,7 +753,7 @@ public sealed class NaverUploadService
                 ["itemName"] = itemName,
                 ["modelName"] = modelName,
                 ["certificateDetails"] = "해당 없음",
-                ["manufacturer"] = "상품상세 참조",
+                ["manufacturer"] = "상세페이지 참조",
                 ["customerServicePhoneNumber"] = "010-2324-8352",
             },
         };
@@ -755,7 +769,7 @@ public sealed class NaverUploadService
             return normalized;
         }
 
-        string Field(string name, string fallback = "상품상세 참조")
+        string Field(string name, string fallback = DetailReferenceText)
             => etc[name]?.GetValue<string>()?.Trim().OrIfEmpty(fallback) ?? fallback;
 
         return new JsonObject
@@ -770,6 +784,82 @@ public sealed class NaverUploadService
                 ["customerServicePhoneNumber"] = Field("customerServicePhoneNumber", "010-2324-8352"),
             },
         };
+    }
+
+    private static Dictionary<string, string> ExtractProvidedNoticeFields(JsonObject providedNotice)
+    {
+        var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var wanted = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "manufacturer", "importer", "producer", "material", "color", "size", "component", "components"
+        };
+
+        void Visit(JsonNode? node)
+        {
+            if (node is JsonObject obj)
+            {
+                foreach (var item in obj)
+                {
+                    if (item.Value is JsonObject or JsonArray)
+                    {
+                        Visit(item.Value);
+                        continue;
+                    }
+                    if (!wanted.Contains(item.Key) || fields.ContainsKey(item.Key))
+                        continue;
+                    var value = CleanNoticeText(item.Value?.GetValue<object>()?.ToString() ?? "");
+                    if (!string.IsNullOrWhiteSpace(value) && !IsReferenceNoticeText(value))
+                        fields[item.Key] = value;
+                }
+            }
+            else if (node is JsonArray arr)
+            {
+                foreach (var item in arr)
+                    Visit(item);
+            }
+        }
+
+        Visit(providedNotice);
+        return fields;
+    }
+
+    private static string CleanNoticeText(string? value)
+    {
+        var text = (value ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(text)) return "";
+        if (string.Equals(text, "상품상세 참조", StringComparison.OrdinalIgnoreCase))
+            return DetailReferenceText;
+        if (string.Equals(text, "상세페이지 참조", StringComparison.OrdinalIgnoreCase))
+            return DetailReferenceText;
+        return text;
+    }
+
+    private static bool IsReferenceNoticeText(string? value)
+        => string.Equals(CleanNoticeText(value), DetailReferenceText, StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeBrandName(string value)
+    {
+        var brand = Regex.Replace(value ?? "", @"[^0-9A-Za-z가-힣]", "").Trim();
+        if (string.IsNullOrWhiteSpace(brand)
+            || string.Equals(brand, "B0000000", StringComparison.OrdinalIgnoreCase)
+            || brand.Contains("브랜드없음", StringComparison.OrdinalIgnoreCase)
+            || brand.Contains("자체브랜드", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(brand, "없음", StringComparison.OrdinalIgnoreCase))
+        {
+            return DefaultBrandName;
+        }
+        return brand.Length > 20 ? brand[..20] : brand;
+    }
+
+    private static string FirstNonEmpty(params string?[] values)
+    {
+        foreach (var value in values)
+        {
+            var text = CleanNoticeText(value);
+            if (!string.IsNullOrWhiteSpace(text))
+                return text;
+        }
+        return "";
     }
 
     private static string InferDefaultProvidedNoticeType(string productName)
@@ -1741,3 +1831,4 @@ public sealed class NaverUploadService
         return 0;
     }
 }
+
