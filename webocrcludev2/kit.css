@@ -3653,6 +3653,29 @@ input[type="checkbox"] {
   padding: 8px;
   font: 700 12px var(--font-sans);
 }
+.emergency-context__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.emergency-context__actions small {
+  color: var(--fg-3);
+  font: 700 10.5px var(--font-sans);
+}
+.emergency-launch-result {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid rgba(37,99,235,.18);
+  border-radius: 8px;
+  background: rgba(239,246,255,.82);
+}
+.emergency-launch-result.is-error {
+  border-color: rgba(239,68,68,.35);
+  background: rgba(254,242,242,.9);
+  color: #b91c1c;
+}
 .upload-table {
   display: grid;
   gap: 10px;

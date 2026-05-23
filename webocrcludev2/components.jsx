@@ -3231,6 +3231,8 @@ function MarketUploadWorkbench({
   const [emergencyContext, setEmergencyContext] = useState(null);
   const [emergencyNote, setEmergencyNote] = useState('');
   const [emergencyBusy, setEmergencyBusy] = useState(false);
+  const [emergencyLaunchBusy, setEmergencyLaunchBusy] = useState(false);
+  const [emergencyLaunchResult, setEmergencyLaunchResult] = useState(null);
   const scopedChannels = Object.entries(marketSelection || {})
     .filter(([, enabled]) => enabled !== false)
     .filter(([key]) => !key.endsWith(':Cafe24'))
@@ -3668,6 +3670,7 @@ function MarketUploadWorkbench({
     const entries = buildSelectedEntries(() => true);
     const uploadPayload = storeUploadPayload(entries, 'emergencyCodexContext');
     setEmergencyBusy(true);
+    setEmergencyLaunchResult(null);
     try {
       const response = await fetch('/api/emergency-codex-context', {
         method: 'POST',
@@ -3690,6 +3693,35 @@ function MarketUploadWorkbench({
       setEmergencyContext({ ok: false, error: error.message });
     } finally {
       setEmergencyBusy(false);
+    }
+  };
+  const launchEmergencyCodex = async () => {
+    if (!emergencyContext?.id || emergencyLaunchBusy) return;
+    setEmergencyLaunchBusy(true);
+    setEmergencyLaunchResult(null);
+    try {
+      const response = await fetch('/api/emergency-codex-open', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          id: emergencyContext.id,
+          instruction: emergencyNote,
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result?.ok) throw new Error(result?.error || `codex ${response.status}`);
+      setEmergencyLaunchResult(result);
+      onRuntimeArtifact?.({ path: result.requestPath });
+    } catch (error) {
+      setEmergencyLaunchResult({ ok: false, error: error.message });
+    } finally {
+      setEmergencyLaunchBusy(false);
+    }
+  };
+  const handleEmergencyNoteKeyDown = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      launchEmergencyCodex();
     }
   };
 
@@ -3741,8 +3773,27 @@ function MarketUploadWorkbench({
                   <textarea
                     value={emergencyNote}
                     onChange={(e) => setEmergencyNote(e.target.value)}
-                    placeholder="기타 지시: 예) 네이버만 삭제 계획 잡아줘, 쿠팡은 건드리지 마"
+                    onKeyDown={handleEmergencyNoteKeyDown}
+                    placeholder="1/2/3/4 또는 직접 지시 입력 후 Enter: 예) 4, 롯데ON 실패 원인만 보고서로 정리"
                     rows="2"/>
+                  <div className="emergency-context__actions">
+                    <small>Enter는 Codex 실행, Shift+Enter는 줄바꿈</small>
+                    <AuroraBtn icon={<IconCmd size={16}/>} onClick={launchEmergencyCodex} disabled={emergencyLaunchBusy}>
+                      {emergencyLaunchBusy ? 'Codex 여는 중' : 'PowerShell Codex 열기'}
+                    </AuroraBtn>
+                  </div>
+                  {emergencyLaunchResult && (
+                    <div className={`emergency-launch-result ${emergencyLaunchResult.ok === false ? 'is-error' : ''}`}>
+                      {emergencyLaunchResult.ok === false ? (
+                        <span>{emergencyLaunchResult.error}</span>
+                      ) : (
+                        <>
+                          <strong>Codex 복구 세션을 열었습니다</strong>
+                          <small>{emergencyLaunchResult.requestPath}</small>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </>
               )}
             </div>

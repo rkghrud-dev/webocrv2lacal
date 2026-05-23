@@ -6135,6 +6135,116 @@ def write_emergency_codex_context(payload: dict) -> dict:
     }
 
 
+def resolve_emergency_dir(emergency_id: str) -> Path:
+    clean_id = safe_name(text_value(emergency_id), "")
+    if not clean_id:
+        raise ValueError("emergency id required")
+    target = (EMERGENCY_ROOT / clean_id).resolve()
+    if not is_within(EMERGENCY_ROOT, target) or not target.exists() or not target.is_dir():
+        raise ValueError("emergency context not found")
+    return target
+
+
+def option_label_for_emergency(value: str) -> str:
+    text = text_value(value)
+    labels = {
+        "1": "API 업로드 성공 상품만 삭제/판매중지 계획 생성",
+        "2": "실패 상품만 재시도 계획 생성",
+        "3": "특정 마켓만 롤백 계획 생성",
+        "4": "업로드 파일/로그 보고서 생성",
+    }
+    return labels.get(text.strip(), "")
+
+
+def open_emergency_codex_session(payload: dict) -> dict:
+    target = resolve_emergency_dir(text_value(payload.get("id")))
+    context_path = target / "context.md"
+    context_json_path = target / "upload_context.json"
+    request_path = target / "emergency_request.md"
+    launcher_path = target / "open_codex_recovery.ps1"
+    instruction = text_value(payload.get("instruction") or payload.get("note")).strip()
+    selected_label = option_label_for_emergency(instruction)
+    if not instruction:
+        instruction = "4"
+        selected_label = option_label_for_emergency(instruction)
+
+    request_lines = [
+        "# 긴급 복구 Codex 요청",
+        "",
+        "이 세션은 WebOcrClude 로컬 업로드 화면에서 열린 긴급 복구 세션입니다.",
+        "아래 컨텍스트를 먼저 읽고, 현재 업로드 상황을 요약한 뒤 사용자와 대화하면서 복구 계획을 잡으세요.",
+        "",
+        "## 사용자가 선택/입력한 요청",
+        f"- 입력: {instruction}",
+    ]
+    if selected_label:
+        request_lines.append(f"- 해석: {selected_label}")
+    request_lines.extend([
+        "",
+        "## 반드시 지킬 것",
+        "- 삭제, 판매중지, 롤백, 재업로드 같은 파괴적 작업은 바로 실행하지 말고 대상 목록과 계획을 먼저 보여주세요.",
+        "- 사용자가 확인하기 전에는 API 삭제/수정 명령을 실행하지 마세요.",
+        "- 업로드 성공/실패/대기/엑셀 대상을 분리해서 말하세요.",
+        "- 필요한 경우 이 디렉터리의 JSON과 로그를 읽고 근거를 확인하세요.",
+        "",
+        "## 읽어야 할 파일",
+        f"- 컨텍스트 요약: {context_path}",
+        f"- 원본 JSON: {context_json_path}",
+        f"- 롤백 초안: {target / 'rollback_plan.md'}",
+        "",
+        "## 첫 응답 형식",
+        "1. 현재 작업이 무엇인지 요약",
+        "2. 성공/실패/대기/엑셀 대상 개수 요약",
+        "3. 사용자의 요청에 맞는 복구 선택지",
+        "4. 실행 전 확인해야 할 질문",
+    ])
+    request_path.write_text("\n".join(request_lines), encoding="utf-8")
+
+    ps = [
+        "$ErrorActionPreference = 'Stop'",
+        f"Set-Location -LiteralPath {json.dumps(str(PROJECT_ROOT), ensure_ascii=False)}",
+        f"$requestPath = {json.dumps(str(request_path), ensure_ascii=False)}",
+        "$prompt = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8",
+        "Write-Host ''",
+        "Write-Host '=== WebOcrClude 긴급 복구 Codex ===' -ForegroundColor Red",
+        "Write-Host ('요청 파일: ' + $requestPath) -ForegroundColor DarkGray",
+        "Write-Host 'Codex가 컨텍스트를 읽은 상태로 시작됩니다. 이후 이 창에서 직접 대화하세요.' -ForegroundColor Yellow",
+        "Write-Host ''",
+        f"codex --cd {json.dumps(str(PROJECT_ROOT), ensure_ascii=False)} --sandbox danger-full-access --ask-for-approval on-request --no-alt-screen $prompt",
+    ]
+    launcher_path.write_text("\n".join(ps), encoding="utf-8")
+
+    if payload.get("dryRun"):
+        return {
+            "ok": True,
+            "id": target.name,
+            "pid": 0,
+            "requestPath": str(request_path),
+            "launcherPath": str(launcher_path),
+            "message": "PowerShell Codex 복구 세션 실행 준비가 완료되었습니다.",
+            "dryRun": True,
+        }
+
+    args = [
+        "powershell.exe",
+        "-NoExit",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(launcher_path),
+    ]
+    creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    process = subprocess.Popen(args, cwd=str(PROJECT_ROOT), creationflags=creationflags)
+    return {
+        "ok": True,
+        "id": target.name,
+        "pid": process.pid,
+        "requestPath": str(request_path),
+        "launcherPath": str(launcher_path),
+        "message": "PowerShell Codex 복구 세션을 열었습니다.",
+    }
+
+
 def write_market_export(payload: dict) -> dict:
     entries = normalize_upload_entries(payload)
     market = safe_name(text_value(payload.get("market") or "market"), "market")
@@ -6842,6 +6952,10 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
             if path == "/api/emergency-codex-context":
                 payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
                 self.send_json(write_emergency_codex_context(payload))
+                return
+            if path == "/api/emergency-codex-open":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                self.send_json(open_emergency_codex_session(payload))
                 return
             if path == "/api/excel-export":
                 self.handle_excel_export()
