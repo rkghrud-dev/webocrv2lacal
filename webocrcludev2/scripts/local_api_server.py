@@ -4995,7 +4995,7 @@ def infer_direct_upload_categories(entry: dict) -> dict[str, str]:
     out: dict[str, str] = {}
     explicit = entry.get("categories")
     if isinstance(explicit, dict):
-        for key in ("naver", "coupang", "lotte_standard", "lotte_display", "lotte_item"):
+        for key in ("naver", "coupang", "lotte_standard", "lotte_display", "lotte_item", "elevenst", "11st", "esm", "auction", "gmarket"):
             val = text_value(explicit.get(key))
             if val:
                 out[key] = val
@@ -5061,6 +5061,14 @@ def infer_direct_upload_categories(entry: dict) -> dict[str, str]:
         matches = search_category_reference("coupang", text, 1)
         if matches:
             out["coupang"] = text_value(matches[0].get("code"))
+    if not out.get("elevenst") and not out.get("11st"):
+        matches = search_category_reference("11st", text, 1)
+        if matches:
+            out["elevenst"] = text_value(matches[0].get("code"))
+    if not out.get("esm"):
+        matches = search_category_reference("esm", text, 1)
+        if matches:
+            out["esm"] = text_value(matches[0].get("code"))
     if not out.get("lotte_standard") or not out.get("lotte_display"):
         matches = search_category_reference("lotteon", text, 12)
         if not out.get("lotte_standard"):
@@ -6250,6 +6258,11 @@ def write_market_export(payload: dict) -> dict:
     market = safe_name(text_value(payload.get("market") or "market"), "market")
     if not entries:
         raise ValueError("export entries empty")
+    if market == "11번가":
+        return write_elevenst_template_export(entries)
+    if market.upper() == "ESM":
+        return write_esm_template_export(entries)
+
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     headers = [
         "계정", "마켓", "GS코드", "원본상품명", "업로드상품명", "검색어설정",
@@ -6347,6 +6360,290 @@ def write_market_export(payload: dict) -> dict:
         "url": f"/data/exports/{urllib.parse.quote(file_name)}",
         "count": len(entries),
         "format": file_format,
+    }
+
+
+ELEVENST_TEMPLATE_PATH = Path(r"C:\Users\rkghr\Downloads\ExcelUnitProductList-Ver2.50.xlsx")
+ESM_TEMPLATE_PATH = Path(r"C:\Users\rkghr\Downloads\new_basic_bulk (1).xlsx")
+ESM_TEMPLATE_SHEET = "NEW 일반상품"
+
+
+def excel_set(sheet, row: int, col: int, value: object) -> None:
+    sheet.cell(row=row, column=col).value = value
+
+
+def trim_at_word(value: object, limit: int) -> str:
+    text = clean_product_title(value) or text_value(value)
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rstrip()
+    space = cut.rfind(" ")
+    if space >= max(10, int(limit * 0.58)):
+        cut = cut[:space]
+    return cut.rstrip(" ,./|-_")
+
+
+def export_detail_html_for_entry(entry: dict) -> str:
+    detail_sources = entry.get("detailImageSrcs") if isinstance(entry.get("detailImageSrcs"), list) else []
+    if not detail_sources:
+        detail_sources = seed_detail_images_for_gs(entry.get("gs"))
+    detail_html = normalize_detail_html_for_upload(entry.get("detailHtml")) or normalize_detail_html_for_upload(seed_detail_html_for_gs(entry.get("gs")))
+    public_detail_images = [public_image_url(url) for url in detail_sources if public_image_url(url)]
+    if detail_html and "<img" not in detail_html.lower() and public_detail_images:
+        detail_html = ""
+    if not detail_html and public_detail_images:
+        detail_html = "<center>" + "".join(f'<img src="{url}">' for url in public_detail_images[:80]) + "</center>"
+    return detail_html or "상세페이지 참조"
+
+
+def export_main_image_for_entry(entry: dict) -> str:
+    return public_image_url(entry.get("mainImageSrc")) or direct_upload_image_ref(entry.get("mainImageSrc"))
+
+
+def export_additional_images_for_entry(entry: dict) -> list[str]:
+    sources = infer_additional_upload_images(entry)
+    return [public_image_url(url) or direct_upload_image_ref(url) for url in sources if public_image_url(url) or direct_upload_image_ref(url)]
+
+
+def option_labels_for_export(entry: dict) -> list[str]:
+    labels = option_labels_from_input(option_input_from_entry(entry))
+    return [re.sub(r"^[A-Z]\s+", "", label).strip() or label for label in labels[:50]]
+
+
+def option_prices_for_export(entry: dict, count: int) -> list[int]:
+    raw = option_additionals_from_entry(entry)
+    prices = [parse_upload_price(item) for item in raw.split("|") if text_value(item)]
+    if len(prices) < count:
+        prices.extend([0] * (count - len(prices)))
+    return prices[:count]
+
+
+def category_value(entry: dict, *keys: str) -> str:
+    categories = entry.get("categories") if isinstance(entry.get("categories"), dict) else {}
+    for key in keys:
+        value = text_value(categories.get(key))
+        if value:
+            return value
+    inferred = infer_direct_upload_categories(entry)
+    for key in keys:
+        value = text_value(inferred.get(key))
+        if value:
+            return value
+    return ""
+
+
+def convert_xlsx_to_xls_if_possible(source: Path, target: Path) -> Path:
+    try:
+        import win32com.client  # type: ignore
+    except Exception:
+        return source
+    excel = None
+    workbook = None
+    try:
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.DisplayAlerts = False
+        workbook = excel.Workbooks.Open(str(source))
+        workbook.SaveAs(str(target), FileFormat=56)
+        workbook.Close(False)
+        source.unlink(missing_ok=True)
+        return target
+    except Exception:
+        try:
+            if workbook is not None:
+                workbook.Close(False)
+        except Exception:
+            pass
+        return source
+    finally:
+        try:
+            if excel is not None:
+                excel.Quit()
+        except Exception:
+            pass
+
+
+def write_elevenst_template_export(entries: list[dict]) -> dict:
+    if not ELEVENST_TEMPLATE_PATH.is_file():
+        raise FileNotFoundError(f"11번가 공식 양식 파일을 찾지 못했습니다: {ELEVENST_TEMPLATE_PATH}")
+    try:
+        from openpyxl import load_workbook
+    except Exception as exc:
+        raise RuntimeError(f"openpyxl 로드 실패: {exc}") from exc
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    work_name = safe_name(f"11번가_업로드_{stamp}.xlsx")
+    work_path = EXPORT_ROOT / work_name
+    xls_name = safe_name(f"11번가_업로드_{stamp}.xls")
+    xls_path = EXPORT_ROOT / xls_name
+    workbook = load_workbook(ELEVENST_TEMPLATE_PATH)
+    sheet = workbook["대량등록 양식"] if "대량등록 양식" in workbook.sheetnames else workbook.worksheets[0]
+    if sheet.max_row >= 6:
+        sheet.delete_rows(6, max(1, sheet.max_row - 5))
+    row_number = 6
+    for entry in entries:
+        price = parse_upload_price(entry.get("salePrice") or entry.get("price")) or 1000
+        consumer_price = parse_upload_price(entry.get("consumerPrice")) or round_100(price * 1.2) or price
+        title = trim_at_word(entry.get("title") or entry.get("sourceName") or entry.get("gs"), 100)
+        main_image = export_main_image_for_entry(entry)
+        add_images = export_additional_images_for_entry(entry)
+        labels = option_labels_for_export(entry)
+        option_prices = option_prices_for_export(entry, len(labels))
+        category_code = category_value(entry, "elevenst", "11st", "eleven")
+        excel_set(sheet, row_number, 2, category_code)
+        excel_set(sheet, row_number, 3, entry["gs"])
+        excel_set(sheet, row_number, 4, entry["gs"])
+        excel_set(sheet, row_number, 5, title)
+        excel_set(sheet, row_number, 6, "샤플라이")
+        excel_set(sheet, row_number, 8, main_image)
+        for index, image in enumerate(add_images[:3], start=9):
+            excel_set(sheet, row_number, index, image)
+        excel_set(sheet, row_number, 13, export_detail_html_for_entry(entry))
+        excel_set(sheet, row_number, 14, "Y")
+        excel_set(sheet, row_number, 15, "01")
+        excel_set(sheet, row_number, 16, "N")
+        excel_set(sheet, row_number, 17, "01")
+        excel_set(sheet, row_number, 18, "01")
+        excel_set(sheet, row_number, 19, "108")
+        excel_set(sheet, row_number, 29, price)
+        if labels:
+            excel_set(sheet, row_number, 31, "01")
+            excel_set(sheet, row_number, 32, "|".join(labels))
+            excel_set(sheet, row_number, 33, "|".join(str(value) for value in option_prices))
+            excel_set(sheet, row_number, 34, "|".join("999" for _ in labels))
+            excel_set(sheet, row_number, 37, len(labels) * 999)
+        else:
+            excel_set(sheet, row_number, 37, 999)
+        if consumer_price:
+            excel_set(sheet, row_number, 41, consumer_price)
+        excel_set(sheet, row_number, 42, "홈런market")
+        excel_set(sheet, row_number, 43, "Y")
+        excel_set(sheet, row_number, 44, "01")
+        excel_set(sheet, row_number, 45, entry["gs"])
+        excel_set(sheet, row_number, 46, "02")
+        excel_set(sheet, row_number, 47, "1287")
+        excel_set(sheet, row_number, 50, "01|03\n02|03\n03|03\n04|05")
+        excel_set(sheet, row_number, 51, "01")
+        excel_set(sheet, row_number, 54, "891045")
+        excel_set(sheet, row_number, 55, "11800")
+        excel_set(sheet, row_number, 56, "상세페이지 참조")
+        excel_set(sheet, row_number, 57, "11905")
+        excel_set(sheet, row_number, 58, "상세페이지 참조")
+        excel_set(sheet, row_number, 59, "23760413")
+        excel_set(sheet, row_number, 60, "판매자 고객센터 문의")
+        excel_set(sheet, row_number, 61, "23759100")
+        excel_set(sheet, row_number, 62, "중국")
+        excel_set(sheet, row_number, 63, "23756033")
+        excel_set(sheet, row_number, 64, "해당사항 없음")
+        excel_set(sheet, row_number, 100, "01")
+        excel_set(sheet, row_number, 101, "01")
+        excel_set(sheet, row_number, 102, "00034")
+        excel_set(sheet, row_number, 103, "1228104")
+        excel_set(sheet, row_number, 105, "01")
+        excel_set(sheet, row_number, 106, 0)
+        excel_set(sheet, row_number, 108, "Y")
+        excel_set(sheet, row_number, 109, "03")
+        excel_set(sheet, row_number, 111, 3000)
+        excel_set(sheet, row_number, 112, "01")
+        excel_set(sheet, row_number, 113, 6000)
+        excel_set(sheet, row_number, 114, "상품 상세설명을 참고해 주세요.")
+        excel_set(sheet, row_number, 115, "상품 상세설명 및 판매자 반품/교환 정책을 참고해 주세요.")
+        row_number += 1
+    if sheet.max_row >= 5:
+        sheet.delete_rows(4, 2)
+    workbook.save(work_path)
+    final_path = convert_xlsx_to_xls_if_possible(work_path, xls_path)
+    return {
+        "fileName": final_path.name,
+        "path": str(final_path),
+        "url": f"/data/exports/{urllib.parse.quote(final_path.name)}",
+        "count": len(entries),
+        "format": final_path.suffix.lstrip(".").lower(),
+        "template": "11st-official",
+    }
+
+
+def write_esm_template_export(entries: list[dict]) -> dict:
+    if not ESM_TEMPLATE_PATH.is_file():
+        raise FileNotFoundError(f"ESM 공식 양식 파일을 찾지 못했습니다: {ESM_TEMPLATE_PATH}")
+    try:
+        from openpyxl import load_workbook
+    except Exception as exc:
+        raise RuntimeError(f"openpyxl 로드 실패: {exc}") from exc
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    file_name = safe_name(f"ESM_옥션지마켓_업로드_{stamp}.xlsx")
+    target = EXPORT_ROOT / file_name
+    workbook = load_workbook(ESM_TEMPLATE_PATH)
+    sheet = workbook[ESM_TEMPLATE_SHEET] if ESM_TEMPLATE_SHEET in workbook.sheetnames else workbook.worksheets[0]
+    if sheet.max_row >= 8:
+        sheet.delete_rows(8, max(1, sheet.max_row - 7))
+    row_number = 8
+    sequence = 1
+    for entry in entries:
+        price = parse_upload_price(entry.get("salePrice") or entry.get("price")) or 1000
+        title = trim_at_word(entry.get("title") or entry.get("sourceName") or entry.get("gs"), 45)
+        labels = option_labels_for_export(entry)
+        main_image = export_main_image_for_entry(entry)
+        add_images = export_additional_images_for_entry(entry)
+        categories = entry.get("categories") if isinstance(entry.get("categories"), dict) else {}
+        esm_code = category_value(entry, "esm")
+        auction_code = category_value(entry, "auction")
+        gmarket_code = category_value(entry, "gmarket")
+        excel_set(sheet, row_number, 1, sequence)
+        excel_set(sheet, row_number, 2, "옥션/G마켓")
+        excel_set(sheet, row_number, 3, "rkghrud")
+        excel_set(sheet, row_number, 4, "rkghrud")
+        excel_set(sheet, row_number, 5, title)
+        excel_set(sheet, row_number, 10, text_value(categories.get("esm_template")))
+        excel_set(sheet, row_number, 11, esm_code)
+        excel_set(sheet, row_number, 12, auction_code)
+        excel_set(sheet, row_number, 13, gmarket_code)
+        excel_set(sheet, row_number, 14, "90")
+        excel_set(sheet, row_number, 15, price)
+        excel_set(sheet, row_number, 16, price)
+        excel_set(sheet, row_number, 21, 99999)
+        excel_set(sheet, row_number, 22, 99999)
+        if labels:
+            excel_set(sheet, row_number, 23, "단독형")
+            excel_set(sheet, row_number, 24, "옵션")
+            excel_set(sheet, row_number, 25, "\n".join(f"{label},정상,노출,99999,99999" for label in labels))
+        else:
+            excel_set(sheet, row_number, 23, "미사용")
+        excel_set(sheet, row_number, 26, main_image)
+        excel_set(sheet, row_number, 27, ",".join(add_images[:9]))
+        excel_set(sheet, row_number, 28, export_detail_html_for_entry(entry))
+        excel_set(sheet, row_number, 30, "일반택배")
+        excel_set(sheet, row_number, 31, "20223695")
+        excel_set(sheet, row_number, 32, "46262933")
+        excel_set(sheet, row_number, 33, "4886443")
+        excel_set(sheet, row_number, 34, "-13")
+        excel_set(sheet, row_number, 35, "-13")
+        excel_set(sheet, row_number, 36, "10013")
+        excel_set(sheet, row_number, 37, 3000)
+        excel_set(sheet, row_number, 38, "36")
+        excel_set(sheet, row_number, 39, "235804")
+        excel_set(sheet, row_number, 40, "인증대상아님")
+        excel_set(sheet, row_number, 43, "인증대상아님")
+        excel_set(sheet, row_number, 46, "해당사항없음")
+        excel_set(sheet, row_number, 47, "인증대상아님")
+        excel_set(sheet, row_number, 50, "해당사항없음")
+        excel_set(sheet, row_number, 51, "인증대상아님")
+        excel_set(sheet, row_number, 53, "해당없음")
+        excel_set(sheet, row_number, 54, "해외수입")
+        excel_set(sheet, row_number, 55, "174")
+        excel_set(sheet, row_number, 56, "단일원산지")
+        excel_set(sheet, row_number, 62, "구매가능")
+        excel_set(sheet, row_number, 63, "과세상품")
+        row_number += 1
+        sequence += 1
+    workbook.save(target)
+    return {
+        "fileName": file_name,
+        "path": str(target),
+        "url": f"/data/exports/{urllib.parse.quote(file_name)}",
+        "count": len(entries),
+        "format": "xlsx",
+        "template": "esm-official",
     }
 
 

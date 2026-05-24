@@ -2821,7 +2821,7 @@ function KeywordWorkbench({
           optionInput: row.optionInput || row.seedProduct?.optionInput || '',
           optionAdditionalAmounts: row.optionAdditionalAmounts || row.seedProduct?.optionAdditionalAmounts || [],
           optionItems: row.optionItems || row.seedProduct?.optionItems || [],
-          categories: {},
+          categories: getRowCategories(row),
           categoryMode: 'upload',
           naverProvidedNotice: row.seedProduct?.naverProvidedNotice || row.naverProvidedNotice || null,
         });
@@ -3426,7 +3426,7 @@ function MarketUploadWorkbench({
           optionInput: row.optionInput || queued?.optionInput || '',
           optionAdditionalAmounts: row.optionAdditionalAmounts || queued?.optionAdditionalAmounts || [],
           optionItems: row.optionItems || queued?.optionItems || [],
-          categories: {},
+          categories: queued?.categories || getRowCategories(row),
           categoryMode: 'upload',
           naverProvidedNotice: queued?.naverProvidedNotice || row.seedProduct?.naverProvidedNotice || row.naverProvidedNotice || null,
         };
