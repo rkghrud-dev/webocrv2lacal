@@ -6369,6 +6369,9 @@ ESM_TEMPLATE_SHEET = "NEW 일반상품"
 
 
 def excel_set(sheet, row: int, col: int, value: object) -> None:
+    if isinstance(value, str):
+        value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", value)
+        value = value[:32767]
     sheet.cell(row=row, column=col).value = value
 
 

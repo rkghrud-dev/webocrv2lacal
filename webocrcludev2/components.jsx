@@ -3677,6 +3677,8 @@ function MarketUploadWorkbench({
         entries.forEach(({ key }) => { next[key] = 'failed'; });
         return next;
       });
+      onRuntimeArtifact?.({ error: `${market} 엑셀 저장 실패: ${error.message}` });
+      window.alert(`${market} 엑셀 저장 실패\n${error.message}`);
     }
   };
   const openEmergencyCodex = async () => {
