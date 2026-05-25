@@ -3638,12 +3638,17 @@ function MarketUploadWorkbench({
       const result = await response.json();
       if (!response.ok || !result?.ok) throw new Error(result?.error || `export ${response.status}`);
       onRuntimeArtifact?.({ path: result.export?.path });
+      const downloadResponse = await fetch(result.export.url, { cache: 'no-store' });
+      if (!downloadResponse.ok) throw new Error(`download ${downloadResponse.status}`);
+      const blob = await downloadResponse.blob();
+      const blobUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.href = new URL(result.export.url, window.location.href).href;
+      link.href = blobUrl;
       link.download = result.export.fileName;
       document.body.appendChild(link);
       link.click();
       link.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
       setExcelExportResult({
         market,
         status: 'success',

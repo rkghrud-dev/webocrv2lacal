@@ -6399,13 +6399,78 @@ def export_detail_html_for_entry(entry: dict) -> str:
     return detail_html or "상세페이지 참조"
 
 
+def seed_public_images_for_gs(gs: object) -> list[str]:
+    gs_value = text_value(gs).upper()
+    if not gs_value:
+        return []
+    base_value = base_gs_code(gs_value)
+    images: list[str] = []
+    for seed_path in sorted(SEED_ROOT.glob("*.webseed.json"), key=lambda path: path.stat().st_mtime, reverse=True):
+        seed = read_json(seed_path, {})
+        products = seed.get("products")
+        if not isinstance(products, list):
+            continue
+        for product in products:
+            if not isinstance(product, dict):
+                continue
+            product_gs = text_value(product.get("gs")).upper()
+            product_base = text_value(product.get("baseGs") or base_gs_code(product_gs)).upper()
+            if gs_value not in {product_gs, product_base} and base_value not in {product_gs, product_base}:
+                continue
+            image_payload = product.get("images")
+            if isinstance(image_payload, dict):
+                for key in ("sourceUrls", "detail", "additional", "all"):
+                    value = image_payload.get(key)
+                    if isinstance(value, list):
+                        images.extend(text_value(url) for url in value)
+                    else:
+                        images.extend(extract_image_urls(text_value(value)))
+            variants = product.get("variants")
+            if isinstance(variants, list):
+                for variant in variants:
+                    if isinstance(variant, dict):
+                        images.extend(extract_image_urls(text_value(variant.get("thumb"))))
+            images.extend(extract_image_urls(text_value(product.get("detailHtml"))))
+            return unique_image_urls([url for url in images if public_image_url(url)])
+    return []
+
+
+def marketplace_export_image_url(src: object, entry: dict) -> str:
+    public = public_image_url(src)
+    if public:
+        return public
+    public_images = seed_public_images_for_gs(entry.get("baseGs") or entry.get("gs"))
+    if not public_images:
+        return ""
+    path = upload_image_src_to_path(src)
+    if path is not None:
+        match = re.search(r"_(\d+)$", path.stem)
+        if match:
+            index = int(match.group(1)) - 1
+            if 0 <= index < len(public_images):
+                return public_images[index]
+    return public_images[0]
+
+
 def export_main_image_for_entry(entry: dict) -> str:
-    return public_image_url(entry.get("mainImageSrc")) or direct_upload_image_ref(entry.get("mainImageSrc"))
+    return marketplace_export_image_url(entry.get("mainImageSrc"), entry)
 
 
 def export_additional_images_for_entry(entry: dict) -> list[str]:
     sources = infer_additional_upload_images(entry)
-    return [public_image_url(url) or direct_upload_image_ref(url) for url in sources if public_image_url(url) or direct_upload_image_ref(url)]
+    main_image = export_main_image_for_entry(entry)
+    out: list[str] = []
+    for source in sources:
+        image = marketplace_export_image_url(source, entry)
+        if image and image != main_image:
+            out.append(image)
+    if not out:
+        out = [url for url in seed_public_images_for_gs(entry.get("baseGs") or entry.get("gs")) if url != main_image]
+    return unique_image_urls(out)
+
+
+def export_stock_quantity() -> int:
+    return 9999
 
 
 def option_labels_for_export(entry: dict) -> list[str]:
@@ -6512,10 +6577,10 @@ def write_elevenst_template_export(entries: list[dict]) -> dict:
             excel_set(sheet, row_number, 31, "01")
             excel_set(sheet, row_number, 32, "|".join(labels))
             excel_set(sheet, row_number, 33, "|".join(str(value) for value in option_prices))
-            excel_set(sheet, row_number, 34, "|".join("999" for _ in labels))
-            excel_set(sheet, row_number, 37, len(labels) * 999)
+            excel_set(sheet, row_number, 34, "|".join(str(export_stock_quantity()) for _ in labels))
+            excel_set(sheet, row_number, 37, len(labels) * export_stock_quantity())
         else:
-            excel_set(sheet, row_number, 37, 999)
+            excel_set(sheet, row_number, 37, export_stock_quantity())
         if consumer_price:
             excel_set(sheet, row_number, 41, consumer_price)
         excel_set(sheet, row_number, 42, "홈런market")
@@ -6604,12 +6669,12 @@ def write_esm_template_export(entries: list[dict]) -> dict:
         excel_set(sheet, row_number, 14, "90")
         excel_set(sheet, row_number, 15, price)
         excel_set(sheet, row_number, 16, price)
-        excel_set(sheet, row_number, 21, 99999)
-        excel_set(sheet, row_number, 22, 99999)
+        excel_set(sheet, row_number, 21, export_stock_quantity())
+        excel_set(sheet, row_number, 22, export_stock_quantity())
         if labels:
             excel_set(sheet, row_number, 23, "단독형")
             excel_set(sheet, row_number, 24, "옵션")
-            excel_set(sheet, row_number, 25, "\n".join(f"{label},정상,노출,99999,99999" for label in labels))
+            excel_set(sheet, row_number, 25, "\n".join(f"{label},정상,노출,{export_stock_quantity()},{export_stock_quantity()}" for label in labels))
         else:
             excel_set(sheet, row_number, 23, "미사용")
         excel_set(sheet, row_number, 26, main_image)
