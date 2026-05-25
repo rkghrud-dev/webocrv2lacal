@@ -215,6 +215,12 @@ input[type="checkbox"] {
   display: grid;
   gap: 6px;
 }
+.seed-store-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
 .seed-store-path {
   padding: 5px 8px;
   border-radius: 6px;

@@ -1106,6 +1106,8 @@ function Sidebar({
   onLoadSeed,
   onRenameSeed,
   onDeleteSeed,
+  onExportSeeds,
+  seedExportBusy = false,
 }) {
   const [seedOpen, setSeedOpen] = useState(true);
   const [seedMenu, setSeedMenu] = useState(null);
@@ -1160,7 +1162,12 @@ function Sidebar({
         </button>
         {seedOpen && (
           <div className="seed-panel">
-            <div className="seed-store-path">{seedStorePath}</div>
+            <div className="seed-store-tools">
+              <div className="seed-store-path">{seedStorePath}</div>
+              <GhostBtn icon={<IconFile size={14}/>} onClick={onExportSeeds} disabled={!seedFiles.length || seedExportBusy}>
+                {seedExportBusy ? '생성 중' : '통합 엑셀'}
+              </GhostBtn>
+            </div>
             <div className="seed-list">
               {seedFiles.length > 0 ? seedGroups.map((group) => {
                 const expanded = openSeedDates[group.date] === true;
@@ -3655,6 +3662,7 @@ function MarketUploadWorkbench({
         count: result.export?.count || entries.length,
         fileName: result.export?.fileName,
         path: result.export?.path,
+        downloadsPath: result.export?.downloadsPath,
         url: result.export?.url,
         format: result.export?.format,
       });
@@ -3888,7 +3896,7 @@ function MarketUploadWorkbench({
               </strong>
               <small>
                 {excelExportResult.status === 'success'
-                  ? `${excelExportResult.count}개 · ${excelExportResult.fileName} · ${excelExportResult.path}`
+                  ? `${excelExportResult.count}개 · ${excelExportResult.fileName} · Downloads: ${excelExportResult.downloadsPath || '-'} · App: ${excelExportResult.path}`
                   : excelExportResult.message}
               </small>
             </div>
@@ -3898,7 +3906,10 @@ function MarketUploadWorkbench({
                   파일 열기
                 </GhostBtn>
                 <GhostBtn onClick={() => openExcelExportPath(excelExportResult.path, true)}>
-                  폴더 열기
+                  App 폴더
+                </GhostBtn>
+                <GhostBtn onClick={() => openExcelExportPath(excelExportResult.downloadsPath || excelExportResult.path, true)}>
+                  Downloads
                 </GhostBtn>
               </div>
             )}

@@ -763,6 +763,7 @@ function App() {
   const [categoryEditRequest, setCategoryEditRequest] = useState(null);
   const [marketSelection, setMarketSelection] = useState(DEFAULT_MARKET_SELECTION);
   const [seedLibrary, setSeedLibrary] = useState([]);
+  const [seedExportBusy, setSeedExportBusy] = useState(false);
   const [sourceSeedJob, setSourceSeedJob] = useState(null);
   const [keywordJob, setKeywordJob] = useState(null);
   const [uploadQueue, setUploadQueue] = useState(() => {
@@ -1223,6 +1224,31 @@ function App() {
       setSourceSeedJob({ status:'failed', action:'seedRename', error:error.message });
     }
   };
+  const exportCombinedSeeds = async () => {
+    if (seedExportBusy) return;
+    setSeedExportBusy(true);
+    try {
+      const response = await fetch('/api/seeds-export', { method: 'POST' });
+      const payload = await response.json();
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `seed export ${response.status}`);
+      const exportInfo = payload.export || {};
+      rememberSessionArtifact({ path: exportInfo.path });
+      addLog(`시드 통합 엑셀 생성: ${exportInfo.fileName} · ${exportInfo.count || 0}개 상품`);
+      try {
+        await fetch('/api/open-export-path', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: exportInfo.downloadsPath || exportInfo.path, folder: true }),
+        });
+      } catch {}
+      window.alert(`시드 통합 엑셀 생성 완료\n${exportInfo.downloadsPath || exportInfo.path}`);
+    } catch (error) {
+      addLog(`시드 통합 엑셀 생성 실패: ${error.message}`);
+      window.alert(`시드 통합 엑셀 생성 실패\n${error.message}`);
+    } finally {
+      setSeedExportBusy(false);
+    }
+  };
   const toggleMarket = (key) => {
     setMarketSelection((prev) => ({ ...prev, [key]: prev[key] === false }));
   };
@@ -1647,7 +1673,9 @@ function App() {
           seedStorePath={SEED_STORE_PATH}
           onLoadSeed={loadSeedFromLibrary}
           onRenameSeed={renameSeedFromLibrary}
-          onDeleteSeed={deleteSeedFromLibrary}/>
+          onDeleteSeed={deleteSeedFromLibrary}
+          onExportSeeds={exportCombinedSeeds}
+          seedExportBusy={seedExportBusy}/>
 
         <main className="main">
           {stage === 'drop' && !dropMode && (

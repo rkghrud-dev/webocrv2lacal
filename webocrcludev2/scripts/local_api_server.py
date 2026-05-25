@@ -41,6 +41,7 @@ LOGO_ROOT = DATA_ROOT / "logos"
 JOBS_ROOT = DATA_ROOT / "jobs"
 SEED_ROOT = DATA_ROOT / "seeds"
 EXPORT_ROOT = DATA_ROOT / "exports"
+DOWNLOADS_ROOT = Path.home() / "Downloads"
 EMERGENCY_ROOT = DATA_ROOT / "emergency"
 MARKET_KEY_ROOT = DATA_ROOT / "market_keys"
 MARKET_KEY_SETTINGS = MARKET_KEY_ROOT / "settings.json"
@@ -6354,13 +6355,7 @@ def write_market_export(payload: dict) -> dict:
                     "대기",
                 ])
         file_format = "csv"
-    return {
-        "fileName": file_name,
-        "path": str(target),
-        "url": f"/data/exports/{urllib.parse.quote(file_name)}",
-        "count": len(entries),
-        "format": file_format,
-    }
+    return export_response_for_file(target, len(entries), file_format)
 
 
 ELEVENST_TEMPLATE_PATH = Path(r"C:\Users\rkghr\Downloads\ExcelUnitProductList-Ver2.50.xlsx")
@@ -6530,6 +6525,29 @@ def convert_xlsx_to_xls_if_possible(source: Path, target: Path) -> Path:
             pass
 
 
+def copy_export_to_downloads(path: Path) -> Path:
+    DOWNLOADS_ROOT.mkdir(parents=True, exist_ok=True)
+    target = DOWNLOADS_ROOT / path.name
+    if target.exists():
+        stamp = datetime.now().strftime("%H%M%S")
+        target = DOWNLOADS_ROOT / f"{path.stem}_{stamp}{path.suffix}"
+    shutil.copy2(path, target)
+    return target
+
+
+def export_response_for_file(path: Path, count: int, file_format: str, **extra: object) -> dict:
+    downloads_path = copy_export_to_downloads(path)
+    return {
+        "fileName": path.name,
+        "path": str(path),
+        "downloadsPath": str(downloads_path),
+        "url": f"/data/exports/{urllib.parse.quote(path.name)}",
+        "count": count,
+        "format": file_format,
+        **extra,
+    }
+
+
 def write_elevenst_template_export(entries: list[dict]) -> dict:
     if not ELEVENST_TEMPLATE_PATH.is_file():
         raise FileNotFoundError(f"11번가 공식 양식 파일을 찾지 못했습니다: {ELEVENST_TEMPLATE_PATH}")
@@ -6620,14 +6638,7 @@ def write_elevenst_template_export(entries: list[dict]) -> dict:
         sheet.delete_rows(4, 2)
     workbook.save(work_path)
     final_path = convert_xlsx_to_xls_if_possible(work_path, xls_path)
-    return {
-        "fileName": final_path.name,
-        "path": str(final_path),
-        "url": f"/data/exports/{urllib.parse.quote(final_path.name)}",
-        "count": len(entries),
-        "format": final_path.suffix.lstrip(".").lower(),
-        "template": "11st-official",
-    }
+    return export_response_for_file(final_path, len(entries), final_path.suffix.lstrip(".").lower(), template="11st-official")
 
 
 def write_esm_template_export(entries: list[dict]) -> dict:
@@ -6705,14 +6716,7 @@ def write_esm_template_export(entries: list[dict]) -> dict:
         row_number += 1
         sequence += 1
     workbook.save(target)
-    return {
-        "fileName": file_name,
-        "path": str(target),
-        "url": f"/data/exports/{urllib.parse.quote(file_name)}",
-        "count": len(entries),
-        "format": "xlsx",
-        "template": "esm-official",
-    }
+    return export_response_for_file(target, len(entries), "xlsx", template="esm-official")
 
 
 def open_export_path(payload: dict) -> dict:
@@ -6724,7 +6728,7 @@ def open_export_path(payload: dict) -> dict:
         path = (ROOT / path).resolve()
     else:
         path = path.resolve()
-    if not is_within(EXPORT_ROOT, path):
+    if not is_within(EXPORT_ROOT, path) and not is_within(DOWNLOADS_ROOT, path):
         raise ValueError("export path outside allowed folder")
     if not path.exists():
         raise FileNotFoundError(str(path))
@@ -6738,6 +6742,109 @@ def open_export_path(payload: dict) -> dict:
     else:
         subprocess.Popen(["xdg-open", str(target)])
     return {"opened": True, "path": str(path), "target": str(target)}
+
+
+def seed_option_summary(product: dict) -> str:
+    variants = product.get("variants")
+    if not isinstance(variants, list) or not variants:
+        return text_value(product.get("opt") or product.get("optionSummary"))
+    labels = []
+    for variant in variants:
+        if not isinstance(variant, dict):
+            continue
+        label = text_value(variant.get("option") or variant.get("suffix") or variant.get("name"))
+        if label:
+            labels.append(label)
+    return "|".join(labels)
+
+
+def seed_product_price(product: dict) -> int:
+    for key in ("salePrice", "price", "consumerPrice"):
+        price = parse_upload_price(product.get(key))
+        if price:
+            return price
+    variants = product.get("variants")
+    if isinstance(variants, list):
+        for variant in variants:
+            if isinstance(variant, dict):
+                price = parse_upload_price(variant.get("salePrice") or variant.get("price"))
+                if price:
+                    return price
+    return 0
+
+
+def seed_product_image_values(product: dict) -> tuple[str, str, str]:
+    images = product.get("images") if isinstance(product.get("images"), dict) else {}
+    public_images = seed_public_images_for_gs(product.get("baseGs") or product.get("gs"))
+    representative = public_image_url(images.get("representative")) or (public_images[0] if public_images else "")
+    additional = [url for url in public_images if url != representative][:12]
+    detail = [url for url in extract_image_urls(product.get("detailHtml")) if public_image_url(url)]
+    return representative, "|".join(additional), "|".join(detail[:30])
+
+
+def write_combined_seed_export() -> dict:
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+    except Exception as exc:
+        raise RuntimeError(f"openpyxl 로드 실패: {exc}") from exc
+
+    seed_paths = sorted(SEED_ROOT.glob("*.webseed.json"), key=lambda path: path.stat().st_mtime)
+    if not seed_paths:
+        raise ValueError("seed files empty")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    target = EXPORT_ROOT / safe_name(f"전체_시드_통합_{stamp}.xlsx")
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "전체 시드"
+    headers = [
+        "시드파일", "생성일", "GS코드", "기준GS", "상품명", "옵션", "가격",
+        "대표이미지URL", "추가이미지URL", "상세이미지URL", "상세HTML", "원문요약",
+    ]
+    sheet.append(headers)
+    count = 0
+    for seed_path in seed_paths:
+        seed = read_json(seed_path, {})
+        created_at = text_value(seed.get("createdAt")) or datetime.fromtimestamp(seed_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        products = seed.get("products")
+        if not isinstance(products, list):
+            continue
+        for product in products:
+            if not isinstance(product, dict):
+                continue
+            rep, add_images, detail_images = seed_product_image_values(product)
+            raw_text = re.sub(r"\s+", " ", text_value(product.get("rawText")))[:500]
+            sheet.append([
+                seed_path.name,
+                created_at,
+                text_value(product.get("gs")),
+                text_value(product.get("baseGs") or base_gs_code(product.get("gs"))),
+                text_value(product.get("name") or product.get("sourceName")),
+                seed_option_summary(product),
+                seed_product_price(product),
+                rep,
+                add_images,
+                detail_images,
+                normalize_detail_html_for_upload(product.get("detailHtml"))[:32000],
+                raw_text,
+            ])
+            count += 1
+    header_fill = PatternFill("solid", fgColor="E8EDFF")
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="1F2A44")
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    widths = [34, 20, 14, 14, 34, 30, 12, 42, 60, 60, 80, 60]
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+    workbook.save(target)
+    return export_response_for_file(target, count, "xlsx", template="combined-seeds", seedFiles=len(seed_paths))
 
 
 def remove_runtime_path(raw_path: object) -> dict:
@@ -7349,6 +7456,9 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/excel-export":
                 self.handle_excel_export()
+                return
+            if path == "/api/seeds-export":
+                self.send_json({"ok": True, "export": write_combined_seed_export()})
                 return
             if path == "/api/open-export-path":
                 payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
