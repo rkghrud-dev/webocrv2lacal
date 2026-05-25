@@ -6650,6 +6650,31 @@ def write_esm_template_export(entries: list[dict]) -> dict:
     }
 
 
+def open_export_path(payload: dict) -> dict:
+    path_text = text_value(payload.get("path"))
+    if not path_text:
+        raise ValueError("path required")
+    path = Path(path_text)
+    if not path.is_absolute():
+        path = (ROOT / path).resolve()
+    else:
+        path = path.resolve()
+    if not is_within(EXPORT_ROOT, path):
+        raise ValueError("export path outside allowed folder")
+    if not path.exists():
+        raise FileNotFoundError(str(path))
+    target = path.parent if payload.get("folder") else path
+    if payload.get("dryRun"):
+        return {"opened": False, "path": str(path), "target": str(target)}
+    if os.name == "nt":
+        os.startfile(str(target))  # type: ignore[attr-defined]
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", str(target)])
+    else:
+        subprocess.Popen(["xdg-open", str(target)])
+    return {"opened": True, "path": str(path), "target": str(target)}
+
+
 def remove_runtime_path(raw_path: object) -> dict:
     path_text = text_value(raw_path)
     if not path_text:
@@ -7259,6 +7284,10 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/excel-export":
                 self.handle_excel_export()
+                return
+            if path == "/api/open-export-path":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                self.send_json({"ok": True, **open_export_path(payload)})
                 return
             if path == "/api/workspace-reset":
                 self.handle_workspace_reset()

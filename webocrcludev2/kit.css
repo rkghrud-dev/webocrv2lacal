@@ -3771,6 +3771,45 @@ input[type="checkbox"] {
   height: 14px;
   margin: 0;
 }
+.excel-export-result {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid rgba(66,85,255,.2);
+  border-radius: 10px;
+  background: rgba(66,85,255,.06);
+}
+.excel-export-result > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.excel-export-result strong {
+  color: var(--fg-1);
+  font-size: 13px;
+}
+.excel-export-result small {
+  min-width: 0;
+  color: var(--fg-3);
+  font: 700 11px/1.35 var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.excel-export-result.is-success {
+  border-color: rgba(16,185,129,.28);
+  background: rgba(16,185,129,.08);
+}
+.excel-export-result.is-failed {
+  border-color: rgba(239,68,68,.28);
+  background: rgba(239,68,68,.08);
+}
+.excel-export-result__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
 .upload-grid {
   display: grid;
   grid-template-columns: 34px minmax(220px, 1.1fr) minmax(240px, 1fr) 120px minmax(150px, .8fr);

@@ -23,18 +23,18 @@ const IconChevR     = (p) => <Icon {...p} d={<><path d="m9 6 6 6-6 6"/></>}/>;
 const IconGrid      = (p) => <Icon {...p} d={<><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>}/>;
 
 /* ── buttons ──────────────────────────────────────────────── */
-function AuroraBtn({ icon, children, ...p }) {
-  return <button className="btn-aurora" {...p}>{icon}{children}</button>;
+function AuroraBtn({ icon, children, type = 'button', ...p }) {
+  return <button type={type} className="btn-aurora" {...p}>{icon}{children}</button>;
 }
-function VioletBtn({ icon, children, ...p }) {
-  return <button className="btn-violet" {...p}>{icon}{children}</button>;
+function VioletBtn({ icon, children, type = 'button', ...p }) {
+  return <button type={type} className="btn-violet" {...p}>{icon}{children}</button>;
 }
-function GhostBtn({ icon, children, ...p }) {
-  return <button className="btn-ghost" {...p}>{icon}{children}</button>;
+function GhostBtn({ icon, children, type = 'button', ...p }) {
+  return <button type={type} className="btn-ghost" {...p}>{icon}{children}</button>;
 }
-function IconBtn({ icon, label, ...p }) {
+function IconBtn({ icon, label, type = 'button', ...p }) {
   return (
-    <button className="btn-ghost icon-only" aria-label={label} title={label} {...p}>
+    <button type={type} className="btn-ghost icon-only" aria-label={label} title={label} {...p}>
       {icon}
     </button>
   );
@@ -3247,6 +3247,7 @@ function MarketUploadWorkbench({
   const [emergencyBusy, setEmergencyBusy] = useState(false);
   const [emergencyLaunchBusy, setEmergencyLaunchBusy] = useState(false);
   const [emergencyLaunchResult, setEmergencyLaunchResult] = useState(null);
+  const [excelExportResult, setExcelExportResult] = useState(null);
   const scopedChannels = Object.entries(marketSelection || {})
     .filter(([, enabled]) => enabled !== false)
     .filter(([key]) => !key.endsWith(':Cafe24'))
@@ -3627,6 +3628,7 @@ function MarketUploadWorkbench({
   const downloadExcelData = async (market) => {
     const entries = buildSelectedEntries((channel) => channel.market === market);
     const payload = storeUploadPayload(entries, `${market}ExcelExportQueue`);
+    setExcelExportResult({ market, status: 'running', count: entries.length, message: '엑셀 파일 생성 중' });
     try {
       const response = await fetch('/api/excel-export', {
         method: 'POST',
@@ -3637,11 +3639,21 @@ function MarketUploadWorkbench({
       if (!response.ok || !result?.ok) throw new Error(result?.error || `export ${response.status}`);
       onRuntimeArtifact?.({ path: result.export?.path });
       const link = document.createElement('a');
-      link.href = result.export.url;
+      link.href = new URL(result.export.url, window.location.href).href;
       link.download = result.export.fileName;
       document.body.appendChild(link);
       link.click();
       link.remove();
+      setExcelExportResult({
+        market,
+        status: 'success',
+        count: result.export?.count || entries.length,
+        fileName: result.export?.fileName,
+        path: result.export?.path,
+        url: result.export?.url,
+        format: result.export?.format,
+      });
+      openExcelExportPath(result.export?.path, true, { silent: true });
       setUploadStatus((prev) => {
         const next = {...prev};
         entries.forEach(({ key }) => { next[key] = 'exported'; });
@@ -3677,8 +3689,23 @@ function MarketUploadWorkbench({
         entries.forEach(({ key }) => { next[key] = 'failed'; });
         return next;
       });
+      setExcelExportResult({ market, status: 'failed', count: entries.length, message: error.message });
       onRuntimeArtifact?.({ error: `${market} 엑셀 저장 실패: ${error.message}` });
       window.alert(`${market} 엑셀 저장 실패\n${error.message}`);
+    }
+  };
+  const openExcelExportPath = async (path, folder = false, options = {}) => {
+    if (!path) return;
+    try {
+      const response = await fetch('/api/open-export-path', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ path, folder }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result?.ok) throw new Error(result?.error || `open ${response.status}`);
+    } catch (error) {
+      if (!options.silent) window.alert(`파일 열기 실패\n${error.message}`);
     }
   };
   const openEmergencyCodex = async () => {
@@ -3844,6 +3871,34 @@ function MarketUploadWorkbench({
             </AuroraBtn>
           </div>
         </div>
+        {excelExportResult && (
+          <div className={`excel-export-result is-${excelExportResult.status}`}>
+            <div>
+              <strong>
+                {excelExportResult.status === 'running'
+                  ? `${excelExportResult.market} 엑셀 생성 중`
+                  : excelExportResult.status === 'failed'
+                    ? `${excelExportResult.market} 엑셀 저장 실패`
+                    : `${excelExportResult.market} 엑셀 저장 완료`}
+              </strong>
+              <small>
+                {excelExportResult.status === 'success'
+                  ? `${excelExportResult.count}개 · ${excelExportResult.fileName} · ${excelExportResult.path}`
+                  : excelExportResult.message}
+              </small>
+            </div>
+            {excelExportResult.status === 'success' && (
+              <div className="excel-export-result__actions">
+                <GhostBtn icon={<IconFile size={16}/>} onClick={() => openExcelExportPath(excelExportResult.path, false)}>
+                  파일 열기
+                </GhostBtn>
+                <GhostBtn onClick={() => openExcelExportPath(excelExportResult.path, true)}>
+                  폴더 열기
+                </GhostBtn>
+              </div>
+            )}
+          </div>
+        )}
 
         {!uploadRows.length && (
           <div className="upload-empty">
