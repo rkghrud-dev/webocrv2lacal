@@ -7,6 +7,7 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using ClosedXML.Excel;
 
 namespace KeywordOcr.App.Services;
 
@@ -40,6 +41,7 @@ public sealed class CoupangUploadService
 {
     private const int CategoryBatchSize = 5;
     private const int RegisterBatchSize = 5;
+    private const int CoupangMinimumUploadPrice = 1;
 
     public async Task<CoupangUploadResult> UploadAsync(
         string sourcePath,
@@ -100,6 +102,38 @@ public sealed class CoupangUploadService
             Log("Cafe24 상품 데이터 동기화 중...");
             foreach (var row in targetRows)
                 await cafe24MarketData.TryApplyAsync(row, ct);
+        }
+
+        var lowPriceRows = targetRows
+            .Where(row => GetInt(row, "판매가") < CoupangMinimumUploadPrice)
+            .ToList();
+        if (lowPriceRows.Count > 0)
+        {
+            var reportPath = WriteLowPriceSkipReport(sourcePath, lowPriceRows);
+            foreach (var row in lowPriceRows)
+            {
+                var rowNum = (int)row["_row_num"]!;
+                var shortName = GetStr(row, "상품명");
+                if (shortName.Length > 50) shortName = shortName[..50];
+                var price = GetInt(row, "판매가");
+                results.Add(new CoupangUploadResultItem(
+                    rowNum,
+                    shortName,
+                    "SKIP_PRICE_ZERO_OR_LESS",
+                    "",
+                    "",
+                    $"쿠팡 판매가 0원 이하 업로드 제외: {price:#,0}원"));
+            }
+
+            var skipSet = lowPriceRows
+                .Select(row => (int)row["_row_num"]!)
+                .ToHashSet();
+            targetRows = targetRows
+                .Where(row => !skipSet.Contains((int)row["_row_num"]!))
+                .ToList();
+            Log($"쿠팡 판매가 0원 이하 {lowPriceRows.Count}개 업로드 제외");
+            Log($"제외 목록 저장: {reportPath}");
+            Log($"실제 업로드 진행 대상: {targetRows.Count}개");
         }
 
         // ── 1단계: 카테고리 추천 ──────────────────
@@ -421,13 +455,96 @@ public sealed class CoupangUploadService
             }
         }
 
-        var successCount = results.Count(r => r.Status is "SUCCESS" or "DRY_RUN");
+        var successCount = results.Count(r => r.Status is "SUCCESS" or "DRY_RUN" or "SKIP_PRICE_ZERO_OR_LESS");
         var failCount = results.Count - successCount;
         return new CoupangUploadResult(results, successCount, failCount, results.Count);
     }
 
     private static string GetStr(Dictionary<string, object?> row, string key)
         => row.TryGetValue(key, out var v) && v is not null ? v.ToString()?.Trim() ?? "" : "";
+
+    private static int GetInt(Dictionary<string, object?> row, string key)
+    {
+        if (!row.TryGetValue(key, out var v) || v is null)
+            return 0;
+        if (v is double d)
+            return (int)d;
+        if (v is int i)
+            return i;
+
+        var text = v.ToString()?.Trim().Replace(",", "") ?? "";
+        if (int.TryParse(text, out var parsedInt))
+            return parsedInt;
+        if (double.TryParse(text, out var parsedDouble))
+            return (int)parsedDouble;
+        return 0;
+    }
+
+    private static string WriteLowPriceSkipReport(
+        string sourcePath,
+        IReadOnlyList<Dictionary<string, object?>> rows)
+    {
+        var sourceDir = Path.GetDirectoryName(Path.GetFullPath(sourcePath)) ?? Directory.GetCurrentDirectory();
+        var reportDir = Path.Combine(sourceDir, "reports");
+        Directory.CreateDirectory(reportDir);
+
+        var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        var reportPath = Path.Combine(reportDir, $"쿠팡_0원이하_업로드제외_{stamp}.xlsx");
+
+        using var workbook = new XLWorkbook();
+        var ws = workbook.Worksheets.Add("업로드제외");
+        var headers = new[]
+        {
+            "원본행",
+            "상품코드",
+            "상품명",
+            "쿠팡상품명",
+            "판매가",
+            "상품가",
+            "소비자가",
+            "옵션입력",
+            "옵션추가금",
+            "쿠팡카테고리코드",
+            "제외사유",
+            "원본파일"
+        };
+
+        for (var c = 0; c < headers.Length; c++)
+        {
+            var cell = ws.Cell(1, c + 1);
+            cell.Value = headers[c];
+            cell.Style.Font.Bold = true;
+            cell.Style.Fill.BackgroundColor = XLColor.FromHtml("#FCE4D6");
+        }
+
+        for (var r = 0; r < rows.Count; r++)
+        {
+            var row = rows[r];
+            var excelRow = r + 2;
+            var productName = GetStr(row, "상품명");
+            var coupangName = GetStr(row, "홈런_쿠팡상품명")
+                .OrIfEmpty(GetStr(row, "쿠팡상품명"));
+
+            ws.Cell(excelRow, 1).Value = (int)row["_row_num"]!;
+            ws.Cell(excelRow, 2).Value = GetStr(row, "자체 상품코드").OrIfEmpty(GetStr(row, "상품코드"));
+            ws.Cell(excelRow, 3).Value = productName;
+            ws.Cell(excelRow, 4).Value = coupangName;
+            ws.Cell(excelRow, 5).Value = GetInt(row, "판매가");
+            ws.Cell(excelRow, 6).Value = GetInt(row, "상품가");
+            ws.Cell(excelRow, 7).Value = GetInt(row, "소비자가");
+            ws.Cell(excelRow, 8).Value = GetStr(row, "옵션입력");
+            ws.Cell(excelRow, 9).Value = GetStr(row, "옵션추가금");
+            ws.Cell(excelRow, 10).Value = GetStr(row, "쿠팡카테고리코드").OrIfEmpty(GetStr(row, "쿠팡카테고리"));
+            ws.Cell(excelRow, 11).Value = "쿠팡 판매가 0원 이하라 API 업로드 제외";
+            ws.Cell(excelRow, 12).Value = sourcePath;
+        }
+
+        ws.SheetView.FreezeRows(1);
+        ws.RangeUsed()?.SetAutoFilter();
+        ws.Columns().AdjustToContents(8, 60);
+        workbook.SaveAs(reportPath);
+        return reportPath;
+    }
 
     private static string? ResolveDefaultHomeCafe24TokenPath()
     {

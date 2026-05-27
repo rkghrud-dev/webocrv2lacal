@@ -231,6 +231,7 @@ function ProductManagerBrowser({ onImport, addLog }) {
   const [csvDragOver, setCsvDragOver] = useState(false);
   const [supplierDropOpen, setSupplierDropOpen] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [csvUploadSummary, setCsvUploadSummary] = useState(null);
   const dropdownRef = React.useRef(null);
 
   useEffect(() => {
@@ -319,7 +320,8 @@ function ProductManagerBrowser({ onImport, addLog }) {
       const res = await fetch('/api/pm/upload-csv', { method: 'POST', body: form });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || 'upload failed');
-      addLog(`PM CSV 업로드: ${data.fileName} (신규 ${data.new_count || 0} · 수정 ${data.updated_count || 0} · 건너뜀 ${data.skipped_count || 0})`);
+      setCsvUploadSummary(data);
+      addLog(`PM CSV 업로드: ${data.fileName} (총 ${data.total || 0} · 신규 ${data.new_count || 0} · 중복제외 ${data.duplicate_count || 0} · 파일중복 ${data.file_duplicate_count || 0} · 건너뜀 ${data.skipped_count || 0})`);
       const url = selectedDate ? `/api/pm/suppliers?upload_date=${selectedDate}` : '/api/pm/suppliers';
       const sRes = await fetch(url); const sData = await sRes.json();
       setSuppliers(sData.suppliers || []);
@@ -433,6 +435,29 @@ function ProductManagerBrowser({ onImport, addLog }) {
     ),
 
     // ── action bar ──
+    csvUploadSummary && h('div', {className: 'pm-upload-summary', style: {
+      display: 'grid',
+      gridTemplateColumns: 'repeat(5, minmax(110px, 1fr))',
+      gap: '10px',
+      margin: '12px 0',
+      padding: '12px',
+      border: '1px solid rgba(80, 95, 130, .18)',
+      borderRadius: '12px',
+      background: 'rgba(255,255,255,.72)'
+    }},
+      h('div', {style: {gridColumn: '1 / -1', fontWeight: 800}}, `최근 CSV: ${csvUploadSummary.fileName}`),
+      h('div', null, h('b', null, csvUploadSummary.total || 0), h('span', {className: 'color-muted'}, ' 전체')),
+      h('div', null, h('b', null, csvUploadSummary.new_count || 0), h('span', {className: 'color-muted'}, ' 신규추가')),
+      h('div', null, h('b', null, csvUploadSummary.duplicate_count || 0), h('span', {className: 'color-muted'}, ' 기존중복 제외')),
+      h('div', null, h('b', null, csvUploadSummary.file_duplicate_count || 0), h('span', {className: 'color-muted'}, ' 파일내 중복')),
+      h('div', null, h('b', null, csvUploadSummary.skipped_count || 0), h('span', {className: 'color-muted'}, ' 건너뜀')),
+      ((csvUploadSummary.duplicate_samples || []).length > 0) && h('div', {style: {gridColumn: '1 / -1', fontSize: '.82rem'}},
+        h('span', {className: 'color-muted'}, '중복 제외 예시: '),
+        (csvUploadSummary.duplicate_samples || []).slice(0, 8).map(item => item.product_code).join(', '),
+        (csvUploadSummary.duplicate_count || 0) > 8 ? ` 외 ${(csvUploadSummary.duplicate_count || 0) - 8}개` : ''
+      )
+    ),
+
     listLoaded && h('div', {className: 'pm-action-bar'},
       h('div', {className: 'pm-action-left'},
         h('span', {className: 'color-muted'}, `총 ${totalProducts.toLocaleString()}개 SKU 그룹`),

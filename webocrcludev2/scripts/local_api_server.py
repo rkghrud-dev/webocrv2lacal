@@ -7789,13 +7789,77 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
             headers = parsed.get("headers", [])
             naver_dups = parsed.get("naver_duplicates", [])
             naver_listed = parsed.get("naver_listed_codes", [])
-            new_count, updated_count, skipped_count, listed_count = pm_database.upsert_products(
-                products, headers, naver_dups, naver_listed
-            )
-            upload_info = pm_database.save_upload_history(
-                original, len(products), new_count, updated_count, skipped_count
-            )
-            pm_database.save_upload_product_items(upload_info.get("id"), products)
+            existing_codes = set()
+            duplicate_products = []
+            file_duplicate_products = []
+            upload_products = []
+            seen_codes = set()
+            conn = pm_database.get_db()
+            try:
+                for product in products:
+                    code = text_value(product.get("product_code"))
+                    if not code:
+                        continue
+                    if code in seen_codes:
+                        file_duplicate_products.append(product)
+                        continue
+                    seen_codes.add(code)
+                    exists = conn.execute(
+                        "SELECT 1 FROM products WHERE product_code=?",
+                        (code,)
+                    ).fetchone()
+                    if exists:
+                        existing_codes.add(code)
+                        duplicate_products.append(product)
+                    else:
+                        upload_products.append(product)
+            finally:
+                conn.close()
+
+            upload_codes = {text_value(product.get("product_code")) for product in upload_products}
+            naver_dups = [
+                code for code in naver_dups
+                if text_value(code) in upload_codes
+            ]
+            naver_listed = [
+                code for code in naver_listed
+                if text_value(code) in upload_codes
+            ]
+            if upload_products:
+                new_count, updated_count, skipped_count, listed_count = pm_database.upsert_products(
+                    upload_products, headers, naver_dups, naver_listed
+                )
+                upload_info = pm_database.save_upload_history(
+                    original, len(upload_products), new_count, updated_count, skipped_count
+                )
+                pm_database.save_upload_product_items(upload_info.get("id"), upload_products)
+            else:
+                new_count = 0
+                updated_count = 0
+                skipped_count = 0
+                listed_count = 0
+                upload_info = {
+                    "id": None,
+                    "upload_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+            duplicate_count = len(duplicate_products)
+            file_duplicate_count = len(file_duplicate_products)
+            duplicate_samples = [
+                {
+                    "product_code": text_value(product.get("product_code")),
+                    "product_name": text_value(product.get("product_name")),
+                    "supplier_code": text_value(product.get("supplier_code")),
+                }
+                for product in duplicate_products[:30]
+            ]
+            file_duplicate_samples = [
+                {
+                    "product_code": text_value(product.get("product_code")),
+                    "product_name": text_value(product.get("product_name")),
+                    "supplier_code": text_value(product.get("supplier_code")),
+                }
+                for product in file_duplicate_products[:30]
+            ]
             self.send_json({
                 "ok": True,
                 "fileName": original,
@@ -7803,6 +7867,11 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
                 "upload_date": upload_info.get("upload_date"),
                 "upload_date_key": text_value(upload_info.get("upload_date"))[:10],
                 "total": len(products),
+                "accepted_total": len(upload_products),
+                "duplicate_count": duplicate_count,
+                "file_duplicate_count": file_duplicate_count,
+                "duplicate_samples": duplicate_samples,
+                "file_duplicate_samples": file_duplicate_samples,
                 "new": new_count,
                 "updated": updated_count,
                 "skipped": skipped_count,

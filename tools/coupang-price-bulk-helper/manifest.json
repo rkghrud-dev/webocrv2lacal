@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Coupang Price Bulk Helper",
+  "version": "0.1.0",
+  "description": "쿠팡 상품목록에서 1,000원 상품을 리포트 기준 판매가로 수동/반자동 변경합니다.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://wing.coupang.com/*",
+        "https://*.coupang.com/*"
+      ],
+      "js": [
+        "price-data.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

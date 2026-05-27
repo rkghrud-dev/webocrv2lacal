@@ -28,6 +28,12 @@ if (args.Any(arg => string.Equals(arg, "--direct-market-upload", StringCompariso
     return;
 }
 
+if (args.Any(arg => string.Equals(arg, "--coupang-low-price-api-test", StringComparison.OrdinalIgnoreCase)))
+{
+    await RunCoupangLowPriceApiTestAsync(args);
+    return;
+}
+
 var packageOnly = args.Any(arg => string.Equals(arg, "--workspace-package", StringComparison.OrdinalIgnoreCase));
 if (!packageOnly)
 {
@@ -115,6 +121,90 @@ static async Task RunDirectMarketUploadAsync(string[] args)
         foreach (var item in result.Items)
             Console.WriteLine($"[쿠팡] row={item.Row} status={item.Status} id={item.SellerProductId} category={item.Category} error={item.Error}");
     }
+}
+
+static async Task RunCoupangLowPriceApiTestAsync(string[] args)
+{
+    var file = GetArgValue(args, "--file");
+    var gs = GetArgValue(args, "--gs");
+    var rowArg = GetArgValue(args, "--row");
+    var priceArg = GetArgValue(args, "--price");
+
+    if (string.IsNullOrWhiteSpace(file) || !File.Exists(file))
+        throw new FileNotFoundException("업로드 엑셀을 찾지 못했습니다.", file);
+
+    var rows = CoupangProductBuilder.ReadSourceFile(file);
+    var rowNum = ResolveCoupangRows(file, rowArg, gs, "").Single();
+    var row = rows.Single(r => (int)r["_row_num"]! == rowNum);
+    var requestedPrice = int.TryParse(priceArg.Replace(",", ""), out var parsedPrice) && parsedPrice > 0
+        ? parsedPrice
+        : TestGetInt(row, "판매가");
+    if (requestedPrice <= 0)
+        throw new InvalidOperationException("테스트 판매가를 찾지 못했습니다. --price 값을 지정하세요.");
+
+    using var api = CoupangApiClient.FromKeyFile();
+    var categoryRaw = FirstNonEmpty(TestGetStr(row, "쿠팡카테고리코드"), TestGetStr(row, "쿠팡카테고리"));
+    if (!long.TryParse(categoryRaw, out var categoryCode))
+        throw new InvalidOperationException($"쿠팡 카테고리코드를 찾지 못했습니다: {categoryRaw}");
+
+    using var metaDoc = await api.GetCategoryMetaAsync(categoryCode);
+    var product = CoupangProductBuilder.BuildProduct(
+        row,
+        categoryCode,
+        metaDoc.RootElement.Clone(),
+        api.VendorId,
+        api.VendorUserId,
+        deliveryTemplate: null,
+        api.OutboundShippingPlaceCode,
+        api.ReturnCenterCode);
+
+    product["sellerProductName"] = $"LOWPRICE_TEST_{DateTime.Now:MMdd_HHmmss}_{product["sellerProductName"]?.GetValue<string>()}";
+    product["deliveryChargeType"] = "CONDITIONAL_FREE";
+    product["deliveryCharge"] = 3000;
+    product["freeShipOverAmount"] = 50000;
+
+    if (product["items"] is not JsonArray items || items.Count == 0)
+        throw new InvalidOperationException("쿠팡 등록 JSON에 items가 없습니다.");
+
+    foreach (var itemNode in items.OfType<JsonObject>())
+    {
+        var currentSale = itemNode["salePrice"]?.GetValue<int>() ?? 1000;
+        var optionAdd = Math.Max(0, currentSale - 1000);
+        var testSale = requestedPrice + optionAdd;
+        itemNode["salePrice"] = testSale;
+        var original = itemNode["originalPrice"]?.GetValue<int>() ?? testSale;
+        if (original < testSale)
+            itemNode["originalPrice"] = testSale;
+    }
+
+    var reportDir = Path.Combine(Path.GetDirectoryName(file) ?? Directory.GetCurrentDirectory(), "reports");
+    Directory.CreateDirectory(reportDir);
+    var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+    var requestPath = Path.Combine(reportDir, $"coupang_low_price_api_test_request_{gs}_{requestedPrice}_{stamp}.json");
+    var responsePath = Path.Combine(reportDir, $"coupang_low_price_api_test_response_{gs}_{requestedPrice}_{stamp}.json");
+    await File.WriteAllTextAsync(requestPath, product.ToJsonString(new JsonSerializerOptions { WriteIndented = true }), Encoding.UTF8);
+
+    using var respDoc = await api.CreateProductAsync(JsonSerializer.Deserialize<JsonElement>(product.ToJsonString()));
+    var responseJson = JsonSerializer.Serialize(respDoc.RootElement, new JsonSerializerOptions { WriteIndented = true });
+    await File.WriteAllTextAsync(responsePath, responseJson, Encoding.UTF8);
+
+    Console.WriteLine($"[쿠팡 저가 테스트] account=A file={Path.GetFileName(file)} row={rowNum} gs={gs} price={requestedPrice}");
+    Console.WriteLine($"[쿠팡 저가 테스트] request={requestPath}");
+    Console.WriteLine($"[쿠팡 저가 테스트] response={responsePath}");
+    Console.WriteLine(responseJson);
+}
+
+static string TestGetStr(Dictionary<string, object?> row, string key)
+    => row.TryGetValue(key, out var value) && value is not null ? value.ToString()?.Trim() ?? "" : "";
+
+static int TestGetInt(Dictionary<string, object?> row, string key)
+{
+    var text = TestGetStr(row, key).Replace(",", "");
+    if (int.TryParse(text, out var parsedInt))
+        return parsedInt;
+    if (double.TryParse(text, out var parsedDouble))
+        return (int)parsedDouble;
+    return 0;
 }
 
 static void RunMarketExcelValidation(string[] args)

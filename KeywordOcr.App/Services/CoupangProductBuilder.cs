@@ -16,6 +16,8 @@ public static class CoupangProductBuilder
 {
     public const int OutboundCode = 23273329;
     public const int ReturnCenterCode = 1002256451;
+    private const int DefaultDeliveryCharge = 3000;
+    private const int DefaultFreeShipOverAmount = 50000;
 
     // ── 엑셀 읽기 ──────────────────────────────────
 
@@ -108,7 +110,7 @@ public static class CoupangProductBuilder
             : $"{extSku}_{displayName}";
         if (sellerProductName.Length > 100) sellerProductName = sellerProductName[..100];
 
-        var salePrice = Math.Max(GetInt(row, "판매가"), 1000);
+        var salePrice = GetInt(row, "판매가");
         var originalPrice = GetInt(row, "소비자가");
         if (originalPrice < salePrice) originalPrice = salePrice;
 
@@ -237,6 +239,11 @@ public static class CoupangProductBuilder
         foreach (var kvp in source)
             product[kvp.Key] = kvp.Value?.DeepClone();
 
+        product["deliveryChargeType"] = "CONDITIONAL_FREE";
+        product["deliveryCharge"] = DefaultDeliveryCharge;
+        product["freeShipOverAmount"] = DefaultFreeShipOverAmount;
+        product["deliveryChargeOnReturn"] = DefaultDeliveryCharge;
+        product["returnCharge"] = DefaultDeliveryCharge;
         product["deliveryCompanyCode"] = "CJGLS";
         product["remoteAreaDeliverable"] = "Y";
         product["vendorUserId"] = string.IsNullOrWhiteSpace(vendorUserId) ? "rkghrud" : vendorUserId;
@@ -250,11 +257,11 @@ public static class CoupangProductBuilder
         {
             ["deliveryMethod"] = "SEQUENCIAL",
             ["deliveryCompanyCode"] = "CJGLS",
-            ["deliveryChargeType"] = "FREE",
-            ["deliveryCharge"] = 0,
-            ["freeShipOverAmount"] = 0,
-            ["deliveryChargeOnReturn"] = 3000,
-            ["returnCharge"] = 3000,
+            ["deliveryChargeType"] = "CONDITIONAL_FREE",
+            ["deliveryCharge"] = DefaultDeliveryCharge,
+            ["freeShipOverAmount"] = DefaultFreeShipOverAmount,
+            ["deliveryChargeOnReturn"] = DefaultDeliveryCharge,
+            ["returnCharge"] = DefaultDeliveryCharge,
             ["outboundShippingPlaceCode"] = OutboundCode,
             ["returnCenterCode"] = ReturnCenterCode,
             ["returnChargeName"] = "명일우진반품",
