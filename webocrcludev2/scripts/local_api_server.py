@@ -1345,8 +1345,46 @@ DETAIL_HTML_COLUMNS = [
     "상품상세설명",
 ]
 
+SEED_MANDATORY_WORK_NOTES = {
+    "categoryHardLock": {
+        "purpose": "마켓 업로드 전 상품 정체성과 충돌하는 카테고리는 자동 업로드하지 않고 검수 리포트로 분리한다.",
+        "currentLocks": [
+            "원예/농업 분무기 상품은 나사/앙카/볼트/너트/철물 계열 카테고리로 보내지 않는다.",
+            "세탁기 거름망/필터 상품은 나사/철물/원예 계열 등 무관 카테고리로 보내지 않는다.",
+        ],
+        "seedRequirement": "시드에는 상품명, 옵션, OCR/사진분석, 마켓 카테고리 후보를 모두 남겨 이후 카테고리 강력 고정 검수에 사용한다.",
+    },
+    "shipmentManagerIntegration": {
+        "project": r"C:\Users\rkghr\Desktop\프로젝트\Cafe24ShipmentManager",
+        "purpose": "Cafe24ShipmentManager가 Cafe24/쿠팡 API 주문을 수집할 때 상품코드가 비어 일을 두 번 하지 않도록 WEBOCR 업로드 이력을 기준 매핑으로 사용한다.",
+        "mappingSources": [
+            "market_upload_state.json의 마켓별 ProductId",
+            "네이버 originProductNo/channelProductNo",
+            "쿠팡 sellerProductId/vendorItemId/externalVendorSku",
+            "롯데ON spdNo",
+            "상품명+옵션 정규화 키",
+        ],
+        "seedRequirement": "새 시드/마켓 업로드 결과는 GS코드, 마켓 상품ID, 상품명, 옵션명을 추후 주문 매칭에 재사용할 수 있게 유지한다.",
+    },
+    "optionCodeRule": {
+        "purpose": "주문 옵션과 GS코드 옵션 문자를 반드시 맞춘다.",
+        "rules": [
+            "옵션명이 A/B/C/D처럼 문자를 포함하면 기본 GS코드 끝 문자를 해당 옵션 문자로 바꿔 최종 코드를 만든다.",
+            "옵션 문자가 없으면 최종 코드는 빈칸으로 둘 수 있지만 기본 GS코드는 검수/수동입력 힌트로 남긴다.",
+            "쿠팡 externalVendorSku에 이미 GS코드가 있으면 우선 사용하되, 주문 옵션 문자와 SKU 끝 문자가 다르면 옵션 코드 불일치로 차단한다.",
+        ],
+        "seedRequirement": "옵션입력, optionItems, 옵션추가금, 기본 GS코드는 시드에서 누락하지 않는다.",
+    },
+    "marketCodeBackfill": {
+        "purpose": "이미 업로드된 네이버/쿠팡/롯데ON 상품 중 상품코드 확인이 안 되는 항목은 검수 리포트로 찾아낸다.",
+        "command": "KeywordOcr.App.Tests.exe --market-code-backfill-report",
+        "safety": "실제 마켓 수정 apply는 검수 리포트 확인 전에는 막아둔다. 11번가/ESM은 업로드 엑셀 정리 후 처리한다.",
+    },
+}
+
 SEED_ANALYSIS_POLICY = {
     "purpose": "1차 시드는 원본 상품을 마켓별 작업 전에 정리하는 기준 데이터셋이다.",
+    "mandatoryWorkNotes": SEED_MANDATORY_WORK_NOTES,
     "keywordCategories": KEYWORD_POOL_CATEGORIES,
     "candidateOrder": [category["id"] for category in KEYWORD_POOL_CATEGORIES],
     "inputPriority": [
@@ -4151,6 +4189,7 @@ def run_seed_job(job_id: str, payload: dict) -> None:
             "sourceFilter": filter_meta,
             "selectedGs": selected_gs,
             "analysisPolicy": SEED_ANALYSIS_POLICY,
+            "mandatoryWorkNotes": SEED_MANDATORY_WORK_NOTES,
             "products": products,
             "summary": {
                 "products": len(products),
@@ -4171,7 +4210,7 @@ def run_seed_job(job_id: str, payload: dict) -> None:
                 "keywordAvailable": keyword_summary.get("available", False),
                 "keywordError": keyword_summary.get("error", ""),
             },
-            "note": "1차 시드: 원본 정리, 이미지 1000x1000 가공 기준, OCR/사진분석, 키워드 후보 풀을 담는 기준 데이터셋",
+            "note": "1차 시드: 원본 정리, 이미지 1000x1000 가공 기준, OCR/사진분석, 키워드 후보 풀, 카테고리 강력 고정/출고 상품코드 연동 기준을 담는 데이터셋",
         }
         write_json(seed_path, seed_payload)
 
