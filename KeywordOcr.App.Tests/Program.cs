@@ -34,6 +34,12 @@ if (args.Any(arg => string.Equals(arg, "--coupang-low-price-api-test", StringCom
     return;
 }
 
+if (args.Any(arg => string.Equals(arg, "--market-code-backfill-report", StringComparison.OrdinalIgnoreCase)))
+{
+    await RunMarketCodeBackfillReportAsync(args);
+    return;
+}
+
 var packageOnly = args.Any(arg => string.Equals(arg, "--workspace-package", StringComparison.OrdinalIgnoreCase));
 if (!packageOnly)
 {
@@ -192,6 +198,25 @@ static async Task RunCoupangLowPriceApiTestAsync(string[] args)
     Console.WriteLine($"[쿠팡 저가 테스트] request={requestPath}");
     Console.WriteLine($"[쿠팡 저가 테스트] response={responsePath}");
     Console.WriteLine(responseJson);
+}
+
+static async Task RunMarketCodeBackfillReportAsync(string[] args)
+{
+    var statePath = GetArgValue(args, "--state");
+    var outputPath = GetArgValue(args, "--output");
+    var apply = args.Any(arg => string.Equals(arg, "--apply", StringComparison.OrdinalIgnoreCase));
+    if (apply)
+        throw new InvalidOperationException("--apply는 아직 막아두었습니다. 먼저 검수 리포트로 자동수정 대상을 확인하세요.");
+
+    var result = await new MarketCodeBackfillService().BuildReportAsync(new MarketCodeBackfillOptions
+    {
+        Apply = false,
+        StatePath = string.IsNullOrWhiteSpace(statePath) ? null : statePath,
+        OutputPath = string.IsNullOrWhiteSpace(outputPath) ? null : outputPath,
+    }, new Progress<string>(Console.WriteLine), CancellationToken.None);
+
+    Console.WriteLine($"[마켓 코드 역주입 검수] report={result.ReportPath}");
+    Console.WriteLine($"[마켓 코드 역주입 검수] total={result.Total} inspectable={result.Inspectable} updateReady={result.NeedsUpdate} blocked={result.Blocked}");
 }
 
 static string TestGetStr(Dictionary<string, object?> row, string key)

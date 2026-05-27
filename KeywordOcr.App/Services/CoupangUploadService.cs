@@ -250,6 +250,19 @@ public sealed class CoupangUploadService
             }
 
             var catCode = catResults[i].Code;
+            var categoryLabel = catResults[i].Name;
+            if (TryGetCategoryLockViolation(row, catCode, categoryLabel, out var lockReason))
+            {
+                results.Add(new CoupangUploadResultItem(
+                    rowNum,
+                    shortName,
+                    "SKIP_CATEGORY_LOCK",
+                    $"[{catCode}] {categoryLabel}",
+                    "",
+                    lockReason));
+                continue;
+            }
+
             if (!categoryCache.ContainsKey(catCode))
             {
                 try
@@ -264,8 +277,22 @@ public sealed class CoupangUploadService
             }
 
             row["_category_code"] = catCode;
-            row["_category_name"] = catResults[i].Name;
+            row["_category_name"] = categoryLabel;
             row["_category_meta"] = categoryCache[catCode];
+        }
+
+        var categoryLockRows = results
+            .Where(item => item.Status == "SKIP_CATEGORY_LOCK")
+            .ToList();
+        if (categoryLockRows.Count > 0)
+        {
+            var blockedRowNums = categoryLockRows.Select(item => item.Row).ToHashSet();
+            var reportPath = WriteCategoryLockSkipReport(
+                sourcePath,
+                targetRows.Where(row => blockedRowNums.Contains((int)row["_row_num"]!)).ToList(),
+                categoryLockRows);
+            Log($"카테고리 강력 고정 위반 {categoryLockRows.Count}개 업로드 제외");
+            Log($"카테고리 검수 목록 저장: {reportPath}");
         }
 
         // ── 1.5단계: 대표/추가 선택이 반영된 listing_images 우선, 없을 때만 Cafe24 URL 사용 ──
@@ -542,6 +569,116 @@ public sealed class CoupangUploadService
         ws.SheetView.FreezeRows(1);
         ws.RangeUsed()?.SetAutoFilter();
         ws.Columns().AdjustToContents(8, 60);
+        workbook.SaveAs(reportPath);
+        return reportPath;
+    }
+
+    private static bool TryGetCategoryLockViolation(
+        Dictionary<string, object?> row,
+        long coupangCategoryCode,
+        string categoryLabel,
+        out string reason)
+    {
+        var basis = CompactCategoryText(string.Join(" ", new[]
+        {
+            GetStr(row, "상품명"),
+            GetStr(row, "공급사 상품명"),
+            GetStr(row, "홈런_공통마켓상품명"),
+            GetStr(row, "홈런_쿠팡상품명"),
+            GetStr(row, "쿠팡상품명"),
+            GetStr(row, "쿠팡검색태그"),
+            GetStr(row, "검색키워드"),
+            GetStr(row, "옵션입력"),
+            GetStr(row, "상품 상세설명"),
+            GetStr(row, "상세설명"),
+        }));
+        var categoryText = CompactCategoryText($"{coupangCategoryCode} {categoryLabel} {GetStr(row, "쿠팡카테고리경로")} {GetStr(row, "쿠팡카테고리")}");
+
+        if (HasAny(basis, "분무기", "압축분무기", "농약분무기", "원예분무기")
+            && HasAny(basis, "원예", "정원", "농업", "농사", "농약", "가드닝", "화분", "식물", "물조리개", "급수")
+            && (coupangCategoryCode == 64310
+                || HasAny(categoryText, "나사", "앙카", "볼트", "너트", "체결", "철물", "못/콘크리트못", "경첩")))
+        {
+            reason = "원예/농업 분무기 상품이 나사/앙카/철물 계열 쿠팡 카테고리로 매칭되어 차단";
+            return true;
+        }
+
+        if (HasAny(basis, "세탁기거름망", "세탁기필터", "먼지거름망", "세탁거름망")
+            && HasAny(basis, "세탁", "세탁기", "먼지", "보풀", "거름망", "필터")
+            && (coupangCategoryCode == 64310
+                || HasAny(categoryText, "나사", "앙카", "볼트", "너트", "체결", "철물", "원예", "가드닝")))
+        {
+            reason = "세탁기 거름망/필터 상품이 무관 카테고리로 매칭되어 차단";
+            return true;
+        }
+
+        reason = "";
+        return false;
+    }
+
+    private static string CompactCategoryText(string value)
+        => Regex.Replace(value ?? "", @"\s+", "").ToLowerInvariant();
+
+    private static bool HasAny(string text, params string[] terms)
+        => terms.Any(term => text.Contains(term, StringComparison.OrdinalIgnoreCase));
+
+    private static string WriteCategoryLockSkipReport(
+        string sourcePath,
+        IReadOnlyList<Dictionary<string, object?>> rows,
+        IReadOnlyList<CoupangUploadResultItem> skipped)
+    {
+        var sourceDir = Path.GetDirectoryName(Path.GetFullPath(sourcePath)) ?? Directory.GetCurrentDirectory();
+        var reportDir = Path.Combine(sourceDir, "reports");
+        Directory.CreateDirectory(reportDir);
+
+        var reasonByRow = skipped.ToDictionary(item => item.Row);
+        var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        var reportPath = Path.Combine(reportDir, $"쿠팡_카테고리강력고정_검수필요_{stamp}.xlsx");
+
+        using var workbook = new XLWorkbook();
+        var ws = workbook.Worksheets.Add("카테고리검수필요");
+        var headers = new[]
+        {
+            "원본행",
+            "상품코드",
+            "상품명",
+            "쿠팡상품명",
+            "현재쿠팡카테고리",
+            "옵션입력",
+            "검색키워드",
+            "차단사유",
+            "원본파일"
+        };
+
+        for (var c = 0; c < headers.Length; c++)
+        {
+            var cell = ws.Cell(1, c + 1);
+            cell.Value = headers[c];
+            cell.Style.Font.Bold = true;
+            cell.Style.Fill.BackgroundColor = XLColor.FromHtml("#FCE4D6");
+        }
+
+        for (var r = 0; r < rows.Count; r++)
+        {
+            var row = rows[r];
+            var rowNum = (int)row["_row_num"]!;
+            var excelRow = r + 2;
+            reasonByRow.TryGetValue(rowNum, out var skippedItem);
+
+            ws.Cell(excelRow, 1).Value = rowNum;
+            ws.Cell(excelRow, 2).Value = GetStr(row, "자체 상품코드").OrIfEmpty(GetStr(row, "상품코드"));
+            ws.Cell(excelRow, 3).Value = GetStr(row, "상품명");
+            ws.Cell(excelRow, 4).Value = GetStr(row, "홈런_쿠팡상품명").OrIfEmpty(GetStr(row, "쿠팡상품명"));
+            ws.Cell(excelRow, 5).Value = skippedItem?.Category ?? GetStr(row, "쿠팡카테고리코드").OrIfEmpty(GetStr(row, "쿠팡카테고리"));
+            ws.Cell(excelRow, 6).Value = GetStr(row, "옵션입력");
+            ws.Cell(excelRow, 7).Value = GetStr(row, "검색키워드").OrIfEmpty(GetStr(row, "쿠팡검색태그"));
+            ws.Cell(excelRow, 8).Value = skippedItem?.Error ?? "카테고리 강력 고정 위반";
+            ws.Cell(excelRow, 9).Value = sourcePath;
+        }
+
+        ws.SheetView.FreezeRows(1);
+        ws.RangeUsed()?.SetAutoFilter();
+        ws.Columns().AdjustToContents(8, 80);
         workbook.SaveAs(reportPath);
         return reportPath;
     }

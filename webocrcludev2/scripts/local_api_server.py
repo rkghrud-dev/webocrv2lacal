@@ -165,6 +165,33 @@ CATEGORY_STRONG_TERMS = (
     "확대경", "휘슬", "옷핀", "가방", "프라이팬", "필터", "손잡이", "호스", "북마크",
     "발톱칼", "니플", "발캡", "발도장", "조명", "부쉬", "호루라기",
 )
+CATEGORY_HARD_LOCKS: tuple[dict[str, object], ...] = (
+    {
+        "id": "garden_sprayer",
+        "label": "원예/농업 분무기",
+        "triggers": ("분무기", "압축분무기", "농약분무기", "원예분무기"),
+        "context": ("원예", "정원", "농업", "농사", "농약", "가드닝", "화분", "식물", "물조리개", "급수"),
+        "prefer_path": ("원예", "가드닝", "농업", "분무기", "물조리개", "급수장치"),
+        "forbid_path": ("나사", "앙카", "볼트", "너트", "체결", "철물", "못/콘크리트못", "경첩"),
+        "fixed_codes": {
+            "naver": ("50003372",),
+            "coupang": ("78534", "78533"),
+            "11st": ("1008198", "1342504"),
+            "lotteon": ("BC44081300", "BC37010700"),
+        },
+    },
+    {
+        "id": "washer_filter",
+        "label": "세탁기 거름망/필터",
+        "triggers": ("세탁기거름망", "세탁기필터", "먼지거름망", "세탁거름망"),
+        "context": ("세탁", "세탁기", "먼지", "보풀", "거름망", "필터"),
+        "prefer_path": ("세탁", "세탁용품", "거름망", "필터"),
+        "forbid_path": ("나사", "앙카", "볼트", "너트", "체결", "철물", "원예", "가드닝"),
+        "fixed_codes": {
+            "coupang": ("64470",),
+        },
+    },
+)
 BOOK_PATH_TOKENS = ("도서", "잡지", "ebook", "국내도서", "외국도서")
 BOOK_QUERY_TOKENS = ("도서", "책", "잡지", "교재", "문제집", "소설", "에세이", "사진집")
 FOOD_PATH_TOKENS = ("식품", "음료", "우유", "커피", "과자", "간식")
@@ -893,6 +920,37 @@ def category_domain_adjustment(compact_query: str, compact_path: str) -> int:
     return adjustment
 
 
+def category_hard_lock(compact_query: str) -> dict[str, object] | None:
+    for hard_lock in CATEGORY_HARD_LOCKS:
+        triggers = tuple(hard_lock.get("triggers") or ())
+        context = tuple(hard_lock.get("context") or ())
+        if category_has_any(compact_query, triggers) and category_has_any(compact_query, context):
+            return hard_lock
+    return None
+
+
+def category_hard_lock_adjustment(
+    hard_lock: dict[str, object] | None,
+    market_key: str,
+    item_code: str,
+    compact_path: str,
+) -> int:
+    if not hard_lock:
+        return 0
+    fixed_codes = hard_lock.get("fixed_codes") if isinstance(hard_lock.get("fixed_codes"), dict) else {}
+    fixed_for_market = tuple(str(code) for code in fixed_codes.get(market_key, ())) if isinstance(fixed_codes, dict) else ()
+    prefer_path = tuple(hard_lock.get("prefer_path") or ())
+    forbid_path = tuple(hard_lock.get("forbid_path") or ())
+    adjustment = 0
+    if item_code and fixed_for_market and item_code in fixed_for_market:
+        adjustment += 1000
+    if category_has_any(compact_path, prefer_path):
+        adjustment += 420
+    if category_has_any(compact_path, forbid_path):
+        adjustment -= 1200
+    return adjustment
+
+
 CATEGORY_BUNDLE_MARKETS = (
     ("naver", "네이버"),
     ("coupang", "쿠팡"),
@@ -1053,11 +1111,13 @@ def search_category_reference(market: object, query: object, limit: int = 80) ->
     smart_tokens = category_query_tokens(query_text)
     query_context = category_query_context(compact_query)
     query_profile = category_intent_profile(compact_query)
+    hard_lock = category_hard_lock(compact_query)
     scored: list[tuple[int, dict[str, object]]] = []
 
     for item in items:
         path_text = category_text(item.get("path"))
         name_text = category_text(item.get("name"))
+        item_code = category_text(item.get("code"))
         compact_path = category_compact(path_text)
         compact_name = category_compact(name_text)
         depth = int(item.get("depth") or 0)
@@ -1109,6 +1169,9 @@ def search_category_reference(market: object, query: object, limit: int = 80) ->
         context_adjustment = category_context_adjustment(query_context, compact_query, compact_path)
         if context_adjustment and (score or context_adjustment > 0):
             score = max(score, leaf_bonus) + context_adjustment
+        hard_lock_adjustment = category_hard_lock_adjustment(hard_lock, market_key, item_code, compact_path)
+        if hard_lock_adjustment and (score or hard_lock_adjustment > 0):
+            score = max(score, leaf_bonus) + hard_lock_adjustment
         if market_key == "lotteon" and score:
             code_text = category_text(item.get("code")).upper()
             if "(구)" in path_text:
@@ -5046,7 +5109,19 @@ def infer_direct_upload_categories(entry: dict) -> dict[str, str]:
             lotte_display="FC19041003",
             lotte_item="04",
         )
-    if re.search(r"나사|스크류|볼트|너트|브라켓|고정핀|철물|부속|부품", compact, re.IGNORECASE):
+    if re.search(r"(원예|정원|농업|농사|농약|가드닝|화분|식물|물조리개|급수).*(분무기|압축분무기|농약분무기|원예분무기)|(분무기|압축분무기|농약분무기|원예분무기).*(원예|정원|농업|농사|농약|가드닝|화분|식물|물조리개|급수)", compact, re.IGNORECASE):
+        apply(
+            naver="50003372",
+            coupang="78534",
+            lotte_standard="BC37010700",
+            lotte_item="38",
+            elevenst="1008198",
+        )
+    if re.search(r"세탁기거름망|세탁기필터|먼지거름망|세탁거름망", compact, re.IGNORECASE):
+        apply(
+            coupang="64470",
+        )
+    if re.search(r"나사|스크류|볼트|너트|브라켓|고정핀|철물|부속|부품", compact, re.IGNORECASE) and not out.get("coupang"):
         apply(
             naver="50003466",
             coupang="64310",
