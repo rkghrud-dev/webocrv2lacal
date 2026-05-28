@@ -60,6 +60,9 @@ ACTIVE_PROCESS_LOCK = threading.Lock()
 CANCELLED_JOB_IDS: set[str] = set()
 CATEGORY_CACHE: dict[str, list[dict[str, object]]] = {}
 
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
 try:
     from category_matching_db import (
         DEFAULT_DB_PATH as CATEGORY_MATCHING_DB_PATH,
@@ -74,6 +77,17 @@ except Exception:
     get_approved_category_mapping = None
     get_category_match_candidates = None
     search_category_matching_db = None
+
+try:
+    from app.services.naver_shopping import (
+        load_shopping_keys,
+        naver_shopping_items,
+        select_naver_category_anchor,
+    )
+except Exception:
+    load_shopping_keys = None
+    naver_shopping_items = None
+    select_naver_category_anchor = None
 
 
 def category_text(value: object) -> str:
@@ -3522,8 +3536,268 @@ def build_keyword_job_products(seed_payload: dict, selected_gs: list[str]) -> li
             "photoAnalysis": photo,
             "keywordCandidatePool": product.get("keywordCandidatePool", {}),
             "generatedKeywordSeed": product.get("generatedKeywordSeed", {}),
+            "ocrPrimaryKeyword": product.get("ocrPrimaryKeyword", {}),
+            "naverShoppingAnalysis": product.get("naverShoppingAnalysis", {}),
+            "categories": product.get("categories", {}),
+            "marketCategoryReview": product.get("marketCategoryReview", {}),
         })
     return out
+
+
+NAVER_SHOPPING_ANALYSIS_LIMIT = 80
+
+
+def clean_naver_shopping_title(value: object) -> str:
+    text = re.sub(r"<[^>]+>", " ", text_value(value))
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def naver_category_path_from_item(item: dict) -> str:
+    return " > ".join(
+        text_value(item.get(f"category{i}"))
+        for i in range(1, 5)
+        if text_value(item.get(f"category{i}"))
+    )
+
+
+def keyword_api_seed_query(product: dict) -> str:
+    basis = product.get("categoryBasis") if isinstance(product.get("categoryBasis"), dict) else {}
+    pool = product.get("keywordCandidatePool") if isinstance(product.get("keywordCandidatePool"), dict) else {}
+    identity_terms = pool.get("identity") if isinstance(pool.get("identity"), list) else []
+    query_tokens = basis.get("queryTokens") if isinstance(basis.get("queryTokens"), list) else []
+    candidates = [
+        product.get("naverApiQuery"),
+        product.get("baseProductName"),
+        product.get("cafe24BaseName"),
+        basis.get("identity"),
+        *identity_terms[:3],
+        *query_tokens[:6],
+        product.get("sourceName"),
+    ]
+    for candidate in candidates:
+        text = clean_base_product_name_candidate(candidate)
+        text = re.sub(r"\bGS\d+[A-Z]?\b", " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s+", " ", text).strip(" ,/-")
+        if len(text) >= 2:
+            return text[:80]
+    return ""
+
+
+def build_ocr_primary_keyword(product: dict) -> dict[str, object]:
+    basis = product.get("categoryBasis") if isinstance(product.get("categoryBasis"), dict) else {}
+    pool = product.get("keywordCandidatePool") if isinstance(product.get("keywordCandidatePool"), dict) else {}
+    ocr = product.get("ocrAnalysis") if isinstance(product.get("ocrAnalysis"), dict) else {}
+    fields = ocr.get("fields") if isinstance(ocr.get("fields"), dict) else {}
+
+    def pool_terms(key: str, count: int) -> list[str]:
+        values = pool.get(key) if isinstance(pool.get(key), list) else []
+        return [text_value(value) for value in values if text_value(value)][:count]
+
+    identity = (
+        text_value(basis.get("identity"))
+        or next(iter(pool_terms("identity", 1)), "")
+        or clean_base_product_name_candidate(product.get("sourceName"))
+    )
+    function_terms = pool_terms("function", 3)
+    use_terms = pool_terms("usePlace", 3) + pool_terms("userSituation", 3)
+    material_terms = pool_terms("materialSpec", 3)
+    problem_terms = pool_terms("problemSolving", 2)
+    field_terms = [
+        text_value(fields.get(key))
+        for key in ("상품유형", "용도", "소재", "색상", "구성", "특징")
+        if text_value(fields.get(key))
+    ]
+
+    pieces = unique_terms([
+        identity,
+        *function_terms,
+        *use_terms,
+        *material_terms,
+        *problem_terms,
+        *field_terms[:4],
+    ])
+    query = clean_base_product_name_candidate(" ".join(pieces[:8])) or keyword_api_seed_query(product)
+    return {
+        "identity": identity,
+        "function": function_terms,
+        "useContext": use_terms,
+        "materialSpec": material_terms,
+        "problemSolving": problem_terms,
+        "ocrFields": field_terms[:8],
+        "primaryKeyword": query[:120],
+        "source": "ocr_category_basis_keyword_pool",
+    }
+
+
+def extract_naver_top_terms(titles: list[str], query: str, limit: int = 36) -> list[str]:
+    stop = {
+        "무료배송", "당일발송", "국내배송", "해외배송", "정품", "세일", "특가", "추천", "인기",
+        "판매", "구매", "최저가", "묶음", "옵션", "색상", "선택", "1개", "1p", "1P",
+    }
+    query_compact = category_compact(query)
+    scored: dict[str, int] = {}
+    for rank, title in enumerate(titles[:40], 1):
+        weight = max(1, 42 - rank)
+        for raw in re.split(r"[\s,/|+·ㆍ\[\](){}<>\"'_:;-]+", title):
+            term = normalize_term(raw)
+            if len(term) < 2 or term in stop:
+                continue
+            if re.fullmatch(r"\d+(?:개|p|P|매|장|cm|mm|m)?", term):
+                continue
+            compact = category_compact(term)
+            if not compact:
+                continue
+            if compact in query_compact or query_compact in compact:
+                scored[term] = scored.get(term, 0) + weight + 12
+            else:
+                scored[term] = scored.get(term, 0) + weight
+    return [
+        term
+        for term, _score in sorted(scored.items(), key=lambda pair: (-pair[1], len(pair[0]), pair[0]))
+    ][:limit]
+
+
+def extract_naver_top_phrases(titles: list[str], query: str, limit: int = 24) -> list[str]:
+    query_tokens = [category_compact(token) for token in re.split(r"[\s,/|+·ㆍ]+", query) if len(category_compact(token)) >= 2]
+    scored: dict[str, int] = {}
+    for rank, title in enumerate(titles[:30], 1):
+        clean = re.sub(r"[\[\](){}<>\"'_:;|/+·ㆍ-]+", " ", title)
+        tokens = [
+            token for token in re.split(r"\s+", clean)
+            if len(category_compact(token)) >= 2 and not re.fullmatch(r"\d+(?:개|p|P|매|장|cm|mm|m)?", token)
+        ]
+        for size in (2, 3, 4):
+            for idx in range(0, max(0, len(tokens) - size + 1)):
+                phrase = " ".join(tokens[idx:idx + size]).strip()
+                compact = category_compact(phrase)
+                if len(compact) < 5:
+                    continue
+                score = max(1, 32 - rank)
+                if query_tokens and any(token in compact for token in query_tokens):
+                    score += 10
+                scored[phrase] = scored.get(phrase, 0) + score
+    return [
+        phrase
+        for phrase, _score in sorted(scored.items(), key=lambda pair: (-pair[1], len(pair[0]), pair[0]))
+    ][:limit]
+
+
+def build_naver_shopping_analysis(product: dict, keys: dict[str, str]) -> dict[str, object]:
+    primary = product.get("ocrPrimaryKeyword") if isinstance(product.get("ocrPrimaryKeyword"), dict) else build_ocr_primary_keyword(product)
+    query = clean_base_product_name_candidate(primary.get("primaryKeyword")) or keyword_api_seed_query(product)
+    analysis: dict[str, object] = {
+        "status": "skipped",
+        "query": query,
+        "ocrPrimaryKeyword": primary,
+        "source": "naver_shopping_api",
+        "topTitles": [],
+        "topTerms": [],
+        "topPhrases": [],
+        "topCategories": [],
+        "anchor": None,
+    }
+    if not query:
+        analysis["reason"] = "query_empty"
+        return analysis
+    if naver_shopping_items is None or select_naver_category_anchor is None:
+        analysis["status"] = "unavailable"
+        analysis["reason"] = "naver_shopping_module_unavailable"
+        return analysis
+    client_id = text_value(keys.get("CLIENT_ID"))
+    client_secret = text_value(keys.get("CLIENT_SECRET"))
+    if not client_id or not client_secret:
+        analysis["status"] = "unavailable"
+        analysis["reason"] = "naver_shopping_api_key_missing"
+        return analysis
+    try:
+        items = naver_shopping_items(query, client_id, client_secret, display=NAVER_SHOPPING_ANALYSIS_LIMIT)
+    except Exception as exc:
+        analysis["status"] = "error"
+        analysis["reason"] = text_value(exc)[:300]
+        return analysis
+
+    titles = [clean_naver_shopping_title(item.get("title")) for item in items if clean_naver_shopping_title(item.get("title"))]
+    category_counts: dict[str, dict[str, object]] = {}
+    for rank, item in enumerate(items, 1):
+        path = naver_category_path_from_item(item)
+        if not path:
+            continue
+        current = category_counts.setdefault(path, {"path": path, "count": 0, "firstRank": rank})
+        current["count"] = int(current.get("count") or 0) + 1
+        current["firstRank"] = min(int(current.get("firstRank") or rank), rank)
+    top_categories = sorted(
+        category_counts.values(),
+        key=lambda item: (-int(item.get("count") or 0), int(item.get("firstRank") or 9999), text_value(item.get("path"))),
+    )[:8]
+    anchor = select_naver_category_anchor(query, items)
+    anchor_dict = None
+    if anchor is not None:
+        anchor_dict = {
+            "categoryId": text_value(getattr(anchor, "category_id", "")),
+            "path": text_value(getattr(anchor, "path", "")),
+            "confidence": getattr(anchor, "confidence", 0),
+            "count": getattr(anchor, "count", 0),
+            "countRatio": getattr(anchor, "count_ratio", 0),
+            "firstRank": getattr(anchor, "first_rank", 0),
+            "needsReview": bool(getattr(anchor, "needs_review", False)),
+            "reason": text_value(getattr(anchor, "reason", "")),
+        }
+    analysis.update({
+        "status": "ok" if items else "empty",
+        "resultCount": len(items),
+        "topTitles": titles[:20],
+        "topTerms": extract_naver_top_terms(titles, query),
+        "topPhrases": extract_naver_top_phrases(titles, query),
+        "topCategories": top_categories,
+        "anchor": anchor_dict,
+    })
+    return analysis
+
+
+def enrich_seed_products_with_naver_shopping(seed_payload: dict, selected_gs: list[str]) -> int:
+    products = seed_payload.get("products") if isinstance(seed_payload.get("products"), list) else []
+    if not products or load_shopping_keys is None:
+        return 0
+    selected = set(selected_gs or [])
+    keys = load_shopping_keys()
+    changed = 0
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        gs = text_value(product.get("gs"))
+        base_gs = text_value(product.get("baseGs"))
+        if selected and gs not in selected and base_gs not in selected:
+            continue
+        product["ocrPrimaryKeyword"] = build_ocr_primary_keyword(product)
+        analysis = build_naver_shopping_analysis(product, keys)
+        product["naverShoppingAnalysis"] = analysis
+        anchor = analysis.get("anchor") if isinstance(analysis.get("anchor"), dict) else {}
+        anchor_code = text_value(anchor.get("categoryId"))
+        anchor_path = text_value(anchor.get("path"))
+        if anchor_code or anchor_path:
+            categories = product.get("categories") if isinstance(product.get("categories"), dict) else {}
+            labels = categories.get("labels") if isinstance(categories.get("labels"), dict) else {}
+            if anchor_code:
+                categories["naver"] = anchor_code
+            if anchor_path:
+                categories["naverPath"] = anchor_path
+                labels["naver"] = anchor_path
+            categories["labels"] = labels
+            product["categories"] = categories
+            review = product.get("marketCategoryReview") if isinstance(product.get("marketCategoryReview"), dict) else {}
+            review["naver"] = {
+                "code": anchor_code,
+                "path": anchor_path,
+                "query": text_value(analysis.get("query")),
+                "confidence": anchor.get("confidence", 0),
+                "needsReview": bool(anchor.get("needsReview")),
+                "source": "naver_shopping_api",
+                "updatedAt": now_text(),
+            }
+            product["marketCategoryReview"] = review
+        changed += 1
+    return changed
 
 
 def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = False) -> str:
@@ -3546,6 +3820,10 @@ def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = F
 - 실제 생성 채널은 네이버/쿠팡/롯데ON/11번가/ESM의 A/B 계정이다.
 - 입력 상품마다 요청된 모든 채널의 상품명과 검색어를 실제로 새로 작성한다.
 - 단순 후보 나열이 아니라 상품 정체성, 기능, 사용처, 문제해결, 재질/규격, 현장명/동의어를 판단해서 조합한다.
+- 전체 순서는 반드시 `사진 다운로드/이미지 OCR → OCR 속성 정리 → 어디에 쓰는 물건인지 명확한 1차 키워드(ocrPrimaryKeyword) 확정 → 그 키워드로 네이버 API 호출 → 카테고리 앵커/상위 표현 기반 마켓별 키워드 생성`이다.
+- 입력 상품의 `naverShoppingAnalysis`가 `status=ok`이면 네이버 쇼핑 API 상위 결과를 1순위 근거로 쓴다.
+- `naverShoppingAnalysis.anchor`의 네이버 카테고리를 상품 정체성 기준으로 삼고, `topTitles`, `topPhrases`, `topTerms`에서 상위 노출 표현을 뽑아 마켓별 상품명/검색어를 만든다.
+- 단, 상품 정체성과 핵심 속성의 최종 기준은 무조건 OCR/이미지/원본 상품 사실이다. 네이버 API는 카테고리 확인과 시장에서 많이 쓰는 표현을 보강하는 용도다.
 
 출력 JSON 스키마:
 {{
@@ -3573,7 +3851,23 @@ def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = F
 - 가장 먼저 각 상품마다 `baseProductName` 1개를 확정한다. 이 값은 Cafe24 공통 상품명이며 네이버 쇼핑 API 호출 query의 기준이다.
 - `baseProductName`은 sourceName을 그대로 쓰지 말고 OCR/이미지 분석의 상품 정체성과 용도를 기준으로 만든다.
 - `baseProductName`에는 옵션 규격/색상/수량, 광고문구, 기능문장, 판매자 안내문구를 넣지 않는다. 예: `1963레트롱옷핀 77mm`가 아니라 `레트로 옷핀`, `검은냥스티커 10`이 아니라 `검은 고양이 차량 스티커`.
-- 마켓별 상품명/검색어는 원칙적으로 `baseProductName → 네이버 API 카테고리/상위 키워드 → 5개 마켓 카테고리 매칭` 이후 재작업되는 값이다. 이 입력에 네이버 API 결과가 없으면 `baseProductName`과 OCR 사실을 기준으로 작성하되, sourceName 단독 추측은 피한다.
+- 입력의 `ocrPrimaryKeyword`는 네이버 API 호출에 사용된 1차 키워드다. 이 값의 `identity`, `function`, `useContext`, `materialSpec`를 먼저 보고 상품이 어디에 쓰이는지 확정한 뒤 마켓별 상품명/검색어를 만든다.
+- `ocrPrimaryKeyword.primaryKeyword`가 어색하면 그대로 복사하지 말고, 같은 OCR 사실 안에서 더 자연스러운 기본상품명으로 정리한다.
+- 마켓별 상품명/검색어는 `baseProductName → naverShoppingAnalysis 네이버 API 카테고리/상위 키워드 → 5개 마켓 카테고리 매칭`을 반영해 재작업한다.
+- 네이버 API 결과가 있으면 LLM의 추측보다 API 상위 결과의 반복 패턴을 참고하되, OCR/이미지 사실과 충돌하면 OCR/이미지 사실이 항상 우선이다.
+- 네이버 API 결과가 없을 때만 `baseProductName`과 OCR 사실을 기준으로 작성하되, sourceName 단독 추측은 피한다.
+- 네이버 API 상위어는 그대로 나열하지 말고 OCR/이미지의 실제 사실어와 결합 가능한 조합을 우선 만든다. 예: OCR에 `흑백`, `체커보드`, `파티`, `식탁보`가 있고 API 상위어에 `식탁보`, `테이블보`, `방수`, `체크`, `행사용`, `집들이`, `생일`, `돌상`이 있으면 `체커보드 식탁보`, `흑백 체크 식탁보`, `파티 테이블보`, `행사용 식탁보`, `홈파티 테이블 커버`, `생일파티 식탁보`, `돌상 테이블보`처럼 만든다.
+- 조합 우선순위는 `OCR 사실어 + API 대표 품목어`, `OCR 디자인/색상 + API 품목어`, `API 사용상황 + API/OCR 품목어`, `API 기능어 + OCR/API 품목어` 순서다.
+- OCR 사실어와 네이버 상위어를 조합한 뒤, 한 번 더 구매자 관점으로 유추/추론해 파생 키워드를 만든다. 단, 실제 상품과 모순되는 속성은 만들지 않는다.
+- 추론 범위는 허용한다: 같은 용도에서 자연스러운 사용상황, 동의어, 다른 명칭, 구매 문제상황, 행사/공간/대상 키워드. 예: `파티 식탁보`에서 `홈파티`, `생일파티`, `돌상`, `백일상`, `행사용`, `테이블커버`, `체크테이블보`는 가능하다.
+- 추론 범위에서 금지한다: OCR/이미지에 없는 소재/방수/수량/크기/브랜드/인증/호환 모델을 사실처럼 단정하는 것. API 상위어에 있어도 근거가 약하면 검색어 보조 후보로만 둔다.
+- 사이즈, 크기, 치수, 색상, 수량, 세트 구성, 소재, 호환 모델, 브랜드는 절대 추론하지 않는다. OCR/이미지/원본 옵션/원본명에서 확인된 값만 상품명과 검색어에 사용한다.
+- 네이버 API 상위 결과에 `4인용`, `원형`, `린넨`, `방수`, `대형`, `화이트` 같은 속성이 많아도 OCR/이미지/원본 옵션에 없으면 해당 속성은 제외한다.
+- 객관 속성의 출처 우선순위는 `OCR 필드/이미지 텍스트 > 원본 옵션명 > 원본 상품명`이다. 이 셋에 없으면 쓰지 않는다.
+- 최종 키워드 풀은 `OCR 직접 사실`, `네이버 상위 표현`, `합리적 추론 파생어` 3층으로 구성하되, 상품명은 1~2층 중심, 검색어는 3층까지 확장한다.
+- OCR에 없는 속성은 API에 많이 보여도 상품명 핵심으로 넣지 않는다. 예: 상품 사진/OCR에서 방수 근거가 없으면 `방수`는 검색어 후보에는 둘 수 있지만 상품명 핵심에는 넣지 않는다.
+- API에 많이 나오는 단어라도 OCR/이미지의 실제 상품과 맞지 않으면 버린다. 반대로 OCR에 명확한 단어가 있으면 API 빈도가 낮아도 상품명/검색어의 중심에 둔다.
+- API 상위어가 많을수록 검색어를 넓히되, 상품명은 실제 상품을 가장 잘 설명하는 5~7개 단어로 압축한다.
 - 상품명은 정확하게, 검색어/태그는 넓게 간다.
 - 상품명은 후보 단어를 단순히 이어붙이지 말고 아래 공식으로 만든다.
   1) 대표 상품 정체성 또는 표준명
@@ -3602,6 +3896,11 @@ def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = F
 - `발편한`, `발 편한`, `편한발`처럼 감성/광고형 문구는 상품명과 검색어에 넣지 않는다. `쿠션`, `충격 완화`, `착용감 보강`처럼 기능어로 바꾼다.
 - 같은 단어를 반복하지 않는다.
 - 상품명에서는 붙여쓴 합성어를 자연스럽게 띄어쓴다. 예: 카라비너릴고리 -> 카라비너 릴고리, 와이어릴고리 -> 와이어 릴고리, 쿠션깔창 -> 쿠션 깔창, 보강패드 -> 보강 패드, 충격완화 -> 충격 완화.
+- 띄어쓰기는 "쪼개서 많이 넣기"가 아니다. 같은 의미 축을 반복하지 말고 대표 표현 하나로 압축한다.
+- 의미 중복 제거 규칙: `코너 쿠션`, `모서리 보호대`, `가구 안전 패드`, `가구 보호대`, `안전 쿠션`처럼 모두 같은 보호 목적이면 상품명에는 `코너 쿠션 모서리 보호대 가구 안전 패드` 정도로 정리하고, 같은 축의 표현을 계속 붙이지 않는다.
+- 상품명에는 핵심 의미 축을 최대 4개만 둔다: `품목/형태`, `기능`, `사용처`, `소재/규격`. 같은 축에서 2개 이상 겹치면 네이버 상위 결과 빈도와 자연스러운 표현을 보고 1개만 고른다.
+- 검색어/태그에는 동의어를 보강하되, 동일 의미 단어를 3개 넘게 반복하지 않는다. 예: 상품명에 `모서리 보호대`를 썼으면 검색어에는 `코너보호대`, `안전패드` 정도만 보강하고 `가구보호대`, `안전쿠션`, `보호쿠션`을 모두 넣지 않는다.
+- 붙여쓴 검색어 후보는 상품명에서는 띄어 쓰고, 검색어에서는 붙여쓴 형태와 자연어 형태를 섞되 과도하게 중복하지 않는다.
 - 검색어/태그는 12-20개를 목표로 하며, 상품명에 못 넣은 동의어/현장명/사용처/문제해결어를 우선 보강한다.
 - 검색어에는 쉼표로 구분된 실제 검색 가능한 말만 넣고, 무관한 인기어와 일부러 만든 오타는 넣지 않는다.
 - 검색어/태그의 각 항목은 공백 없이 붙여쓴다. 예: `쿠션 깔창`은 검색어에서 `쿠션깔창`, `보강 패드`는 `보강패드`, `충격 완화`는 `충격완화`로 쓴다.
@@ -3612,6 +3911,16 @@ def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = F
 - A:네이버 tags는 표준명, 카테고리 정확도, 대표 조합어 중심으로 만든다.
 - B:네이버 tags는 A와 3개 이상 겹치지 않게 사용처, 문제상황, 대상, 소재/형태, 현장명 중심으로 다르게 만든다.
 - A/B 네이버는 같은 단어의 순서만 바꾸지 말고 실제 태그 구성 축을 다르게 한다.
+- 마켓별 검색어는 각 채널마다 약 10개 이상의 핵심 키워드가 되도록 한다. 단, 쿠팡 검색어/키워드량이 가장 많아야 한다. 5개 마켓이 같은 키워드 묶음을 복사하면 안 된다.
+- 권장 키워드량: 쿠팡 18~25개, 11번가/ESM 14~20개, 롯데ON 12~18개, 네이버 tags 8~10개. 마켓 제한이 있으면 제한 안에서 압축한다.
+- 마켓별 차별화 축:
+  - 네이버: OCR 기준 대표 품목명 + 네이버 API 상위 표현 + 자연스러운 SEO 태그 8~10개.
+  - 쿠팡: 가장 많은 키워드를 만든다. 구매자가 바로 이해하는 기능/용도/구성/문제해결/사용처/동의어 중심으로 짧고 명확한 전환형 조합어를 넓게 확장한다.
+  - 롯데ON: 카테고리/생활용품식 표현과 사용공간, 선물/행사/홈데코 같은 맥락 키워드를 보강한다.
+  - 11번가: 동의어, 현장명, 이벤트/상황 키워드를 넓게 잡는다.
+  - ESM: G마켓/옥션 노출을 고려해 표준명, 다른명칭, 용도, 행사/시즌 키워드를 폭넓게 섞는다.
+- A/B 계정 차별화: A는 표준명/대표 카테고리/핵심 기능 중심, B는 사용처/상황/동의어/롱테일 중심으로 만든다. 같은 마켓의 A/B 검색어는 최소 40% 이상 다르게 구성한다.
+- 각 마켓별 상품명도 같은 문장을 복사하지 말고, 같은 OCR 사실 안에서 강조 축을 다르게 잡는다. 예: 네이버는 `흑백 체크 식탁보 파티 테이블보`, 쿠팡은 `파티 식탁보 체크 테이블 커버`, 11번가는 `홈파티 테이블보 체커보드 식탁보`처럼 바꾼다.
 - `title`, `searchTerms`, `tags`는 비워두지 않는다.
 - 요청 채널이 10개면 상품마다 10개 채널 모두 작성한다.
 
@@ -4626,6 +4935,9 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
         seed_payload = read_json(seed_path, {})
         channels = normalize_keyword_channels(payload.get("channels"), text_value(payload.get("accountScope") or "전체"))
         selected_gs = payload.get("selectedGs") if isinstance(payload.get("selectedGs"), list) else []
+        enriched_count = enrich_seed_products_with_naver_shopping(seed_payload, selected_gs)
+        if enriched_count:
+            write_json(seed_path, seed_payload)
         products = build_keyword_job_products(seed_payload, selected_gs)
         if not products:
             raise ValueError("selected seed products not found")
@@ -4738,6 +5050,7 @@ def run_keyword_job(job_id: str, payload: dict) -> None:
             "selectedGs": [product["gs"] for product in products],
             "totalProducts": len(products),
             "totalChannels": len(channels),
+            "naverShoppingEnrichedProducts": enriched_count,
             "parallelGroups": len(work_items),
             "keywordProductChunkSize": chunk_size,
             "keywordStallSeconds": stall_seconds,
