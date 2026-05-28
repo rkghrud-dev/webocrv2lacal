@@ -3,18 +3,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .keyword_utils import SPEC_NUMERIC_RE as _SPEC_NUMERIC_RE
+from .keyword_utils import has_disallowed_latin as _has_disallowed_latin
+
 
 TARGET_DEFAULT = 20
-
-_SPEC_NUMERIC_RE = re.compile(
-    r"("
-    r"m\d+|"
-    r"\d+(/\d+)?(mm|cm|m|ml|l|v|w|a|kg|g|호|인치|평|구|단|매|개|입|p|pcs|ea)|"
-    r"\d+(인용|인분|자루|박스)|"
-    r"\d+[xX]\d+"
-    r")",
-    re.IGNORECASE,
-)
 
 _STOPWORDS = {
     "및", "또는", "에서", "으로", "같은", "관련", "용", "용도", "제품", "상품", "기타",
@@ -65,14 +58,6 @@ def _normalize_token(tok: str) -> str:
     tok = re.sub(r"[^0-9A-Za-z가-힣\-\+ ]", "", tok)
     tok = re.sub(r"\s+", " ", tok).strip()
     return tok
-
-
-def _has_disallowed_latin(tok: str) -> bool:
-    compact = re.sub(r"\s+", "", str(tok or ""))
-    if not re.search(r"[A-Za-z]", compact):
-        return False
-    without_specs = _SPEC_NUMERIC_RE.sub("", compact)
-    return bool(re.search(r"[A-Za-z]", without_specs))
 
 
 def _to_list(v: Any) -> list[str]:

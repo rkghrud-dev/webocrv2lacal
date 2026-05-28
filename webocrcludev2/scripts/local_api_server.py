@@ -779,6 +779,131 @@ def category_basis_from_product(product: dict[str, object]) -> dict[str, object]
     }
 
 
+def clean_base_product_name_candidate(value: object) -> str:
+    text = clean_product_title(value)
+    text = GS_RE.sub(" ", text) if "GS_RE" in globals() else re.sub(r"GS\d{7}[A-Z0-9]*", " ", text, flags=re.IGNORECASE)
+    text = BASE_PRODUCT_SPEC_RE.sub(" ", text)
+    text = re.sub(r"[{}<>\[\]\"'`~!@#$%^&*_+=|\\/;:]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip(" ,-/")
+    return text
+
+
+def base_product_name_candidate_score(value: object) -> int:
+    text = clean_base_product_name_candidate(value)
+    compact = re.sub(r"\s+", "", text).lower()
+    if len(compact) < 2:
+        return -999
+    if len(compact) > 22:
+        return -120
+    if not re.search(r"[가-힣]", text):
+        return -100
+    score = 0
+    if 3 <= len(compact) <= 14:
+        score += 25
+    if " " in text:
+        score += 8
+    if any(term in compact for term in BASE_PRODUCT_NAME_BAD_TERMS):
+        score -= 80
+    if re.search(r"(입니다|됩니다|하세요|가능|추천)$", compact):
+        score -= 40
+    if BASE_PRODUCT_SPEC_RE.search(text):
+        score -= 10
+    if re.search(r"\d", text) and not re.match(r"(?i)^A4", text):
+        score -= 45 if re.match(r"^\d", text) else 30
+    if len(text.split()) >= 5:
+        score -= 15
+    return score
+
+
+def base_product_name_candidates_from_product(product: dict[str, object], limit: int = 12) -> list[dict[str, object]]:
+    if not isinstance(product, dict):
+        return []
+    candidates: list[tuple[str, int, str]] = []
+
+    def add(value: object, priority: int, source_label: str) -> None:
+        text = text_value(value)
+        if text:
+            candidates.append((text, priority, source_label))
+
+    ocr = product.get("ocrAnalysis") if isinstance(product.get("ocrAnalysis"), dict) else {}
+    fields = ocr.get("fields", {}) if isinstance(ocr.get("fields"), dict) else {}
+    for key in ("상품명", "제품명", "품명"):
+        if fields.get(key):
+            add(fields.get(key), 90, f"ocr.fields.{key}")
+    basis = product.get("categoryBasis") if isinstance(product.get("categoryBasis"), dict) else {}
+    if basis.get("identity"):
+        add(basis.get("identity"), 80, "categoryBasis.identity")
+    review = product.get("reviewFields") if isinstance(product.get("reviewFields"), dict) else {}
+    if review.get("productName"):
+        add(review.get("productName"), 95, "reviewFields.productName")
+    keyword_record = product.get("generatedKeywordSeed") if isinstance(product.get("generatedKeywordSeed"), dict) else {}
+    for term in split_candidate_terms(keyword_record.get("productNames"))[:5]:
+        add(term, 70, "generatedKeywordSeed.productNames")
+    for term in split_candidate_terms(keyword_record.get("searchTerms"))[:8]:
+        add(term, 60, "generatedKeywordSeed.searchTerms")
+    pool = product.get("keywordCandidatePool") if isinstance(product.get("keywordCandidatePool"), dict) else {}
+    for key in ("identity", "synonyms", "usePlace"):
+        priority = 65 if key == "identity" else 38
+        for term in split_candidate_terms(pool.get(key))[:5]:
+            add(term, priority, f"keywordCandidatePool.{key}")
+    market_keywords = product.get("marketKeywords") if isinstance(product.get("marketKeywords"), dict) else {}
+    naver_keywords = market_keywords.get("A:네이버") if isinstance(market_keywords.get("A:네이버"), dict) else {}
+    for term in split_candidate_terms(naver_keywords.get("tags"))[:5]:
+        add(term, 55, "marketKeywords.A:네이버.tags")
+    for term in split_candidate_terms(naver_keywords.get("searchTerms"))[:5]:
+        add(term, 45, "marketKeywords.A:네이버.searchTerms")
+    if naver_keywords.get("title"):
+        add(naver_keywords.get("title"), 30, "marketKeywords.A:네이버.title")
+    add(product.get("sourceName"), 75, "sourceName")
+
+    scored: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw, priority, source_label in candidates:
+        cleaned = clean_base_product_name_candidate(raw)
+        key = re.sub(r"\s+", "", cleaned).lower()
+        if not cleaned or key in seen:
+            continue
+        seen.add(key)
+        raw_score = base_product_name_candidate_score(cleaned)
+        scored.append({
+            "name": cleaned,
+            "score": raw_score + priority,
+            "rawScore": raw_score,
+            "priority": priority,
+            "source": text_value(raw)[:80],
+            "sourceType": source_label,
+        })
+    scored.sort(key=lambda item: int(item.get("score") or 0), reverse=True)
+    return scored[:limit]
+
+
+def base_product_name_from_product(product: dict[str, object]) -> str:
+    candidates = base_product_name_candidates_from_product(product, limit=1)
+    if candidates and int(candidates[0].get("score") or -999) > -50:
+        return text_value(candidates[0].get("name"))
+    return clean_base_product_name_candidate(product.get("sourceName") or product.get("gs") or "")
+
+
+def attach_base_product_name_plan(product: dict[str, object]) -> None:
+    candidates = base_product_name_candidates_from_product(product)
+    base_name = text_value(candidates[0].get("name")) if candidates else clean_base_product_name_candidate(product.get("sourceName"))
+    product["baseProductName"] = base_name
+    product["cafe24BaseName"] = base_name
+    product["baseProductNameCandidates"] = candidates
+    product["naverApiQuery"] = base_name
+    product["naverApiPlan"] = {
+        "querySource": "baseProductName",
+        "pipeline": [
+            "OCR/이미지 분석으로 baseProductName 1개 확정",
+            "baseProductName으로 네이버 쇼핑 API 호출",
+            "네이버 category1~4를 상위 노출 순위 가중치와 상품명 적합도로 계산해 앵커 카테고리로 확정",
+            "네이버 앵커 기준으로 쿠팡/롯데ON/11번가/ESM 카테고리 매칭",
+            "네이버 API 키워드와 마켓별 카테고리로 마켓별 상품명/검색어/태그 재생성",
+        ],
+        "doNotUseAsPrimaryQuery": ["sourceName"],
+    }
+
+
 def category_context_adjustment(context: dict[str, bool], compact_query: str, compact_path: str) -> int:
     if not context.get("pet"):
         return 0
@@ -957,6 +1082,11 @@ CATEGORY_BUNDLE_MARKETS = (
     ("lotteon", "롯데ON"),
     ("11st", "11번가"),
     ("esm", "ESM"),
+)
+
+CATEGORY_EXCLUDED_PATH_RE = re.compile(
+    r"어린이|유아|영유아|아동|키즈|베이비|주니어|브랜드|해외직구|직구|도서|서적|책|음반|DVD|블루레이",
+    re.IGNORECASE,
 )
 
 
@@ -1182,6 +1312,8 @@ def search_category_reference(market: object, query: object, limit: int = 80) ->
                 score += 35
             elif code_text.startswith("EC"):
                 score -= 25
+        if score and CATEGORY_EXCLUDED_PATH_RE.search(path_text):
+            score -= 650
         if score:
             scored.append((score - min(depth, 10), item))
 
@@ -1309,6 +1441,22 @@ LOW_QUALITY_KEYWORD_TITLE_PATTERNS = [
     r"^[A-Z]\s*\d",
 ]
 
+BASE_PRODUCT_NAME_BAD_TERMS = (
+    "디테일에서", "완성된다", "경험해보셨나요", "메꾸자고", "그만하세요", "상품 상세",
+    "specification", "size info", "advantage", "제조국", "수입사", "평일", "배송",
+    "필요한가요", "불편하지", "다양한", "인한", "순간", "흔들리는", "안정화",
+)
+
+BASE_PRODUCT_SPEC_RE = re.compile(
+    r"(?<![0-9A-Za-z가-힣])(?:[A-D]\s*)?"
+    r"(?:M\d+(?:[xX×]\d+(?:-\d+)?)?|"
+    r"\d+(?:\.\d+)?\s*(?:mm|cm|m|ml|l|kg|g|개|pcs|p|ea|매|장|호)|"
+    r"A4|"
+    r"\d+[xX×]\d+(?:cm|mm)?)"
+    r"(?![0-9A-Za-z가-힣])",
+    re.IGNORECASE,
+)
+
 LISTING_IMAGE_COLUMNS = [
     "이미지등록(목록)",
     "목록이미지",
@@ -1380,6 +1528,28 @@ SEED_MANDATORY_WORK_NOTES = {
         "command": "KeywordOcr.App.Tests.exe --market-code-backfill-report",
         "safety": "실제 마켓 수정 apply는 검수 리포트 확인 전에는 막아둔다. 11번가/ESM은 업로드 엑셀 정리 후 처리한다.",
     },
+    "naverApiKeywordPipeline": {
+        "purpose": "키워드/카테고리 작업은 가공 전 상품명이 아니라 OCR/이미지 분석으로 확정한 기본상품명 1개에서 시작한다.",
+        "rules": [
+            "1차로 OCR/이미지 분석에서 상품 정체성과 용도를 담은 기본상품명 1개를 만든다. 이 값은 Cafe24 공통 상품명으로도 쓸 수 있다.",
+            "네이버 쇼핑 API 호출 query는 sourceName을 직접 쓰지 않고 기본상품명을 사용한다.",
+            "네이버 API의 category1~4는 단순 빈도 1순위가 아니라 상위 노출 순위 가중치와 상품명 적합도를 함께 계산해 네이버 앵커 카테고리로 잡는다.",
+            "마켓별 상품명/검색어/태그는 네이버 API 상위 상품명 키워드와 마켓별 카테고리 매칭 결과를 받은 뒤 다시 생성한다.",
+            "API 검색어 후보가 기능문장/부속 단어/광고문구로 흐르면 검수 필요로 보고 sourceName fallback만으로 카테고리를 확정하지 않는다.",
+            "마켓 카테고리 매칭 시 어린이/유아/영유아/아동/키즈/베이비/주니어, 브랜드, 해외직구/직구, 도서/서적/책/음반/DVD 계열은 기본 후보에서 배제한다.",
+        ],
+        "seedRequirement": "시드에는 baseProductName, baseProductNameCandidates, naverApiQuery, naverApiPlan을 남겨 이후 네이버 API/마켓 카테고리 매칭 단계의 입력으로 사용한다.",
+    },
+    "categoryReviewPipeline": {
+        "purpose": "키워드 생성 다음 단계에서 네이버 앵커 기준 5개 마켓 카테고리 후보를 만들고, 낮은 점수는 빨간 검수 대상으로 분리한다.",
+        "rules": [
+            "네이버 앵커 카테고리 ID를 기준 매핑표와 연결해 쿠팡/롯데ON/11번가/ESM 1~3순위 후보를 보여준다.",
+            "수동 저장값은 categoryReviewOverrides로 누적하고 다음 시드/업로드 생성 시 자동 후보보다 우선 적용한다.",
+            "점수가 낮거나 manual_review인 후보는 categories에는 반영하더라도 marketCategoryReview.needsReviewMarkets에 남겨 자동 업로드 전 차단한다.",
+            "어린이/유아/브랜드/해외직구/도서 계열 카테고리는 기본 후보에서 배제한다.",
+        ],
+        "seedRequirement": "시드에는 categories, marketCategoryReview, categoryMatchingPipeline을 저장해 이후 같은 GS/마켓 카테고리 검수값을 재사용한다.",
+    },
 }
 
 SEED_ANALYSIS_POLICY = {
@@ -1394,6 +1564,14 @@ SEED_ANALYSIS_POLICY = {
         "이전 V파이프라인 키워드 후보",
     ],
     "searchTermRule": {
+        "pipeline": [
+            "OCR/이미지 분석으로 기본상품명 1개를 먼저 확정한다.",
+            "기본상품명으로 네이버 쇼핑 API를 호출해 상위 노출 가중 카테고리 앵커와 상위 상품명 키워드를 얻는다.",
+            "네이버 앵커 카테고리를 기준으로 쿠팡/롯데ON/11번가/ESM 카테고리를 매칭한다.",
+            "마켓 카테고리 후보에서 어린이/유아/브랜드/해외직구/도서 계열은 최대한 배제한다.",
+            "그 뒤 마켓별 특징에 맞춰 상품명/검색어/태그를 다시 생성한다.",
+        ],
+        "baseProductName": "가공 전 sourceName이 아니라 OCR/이미지 분석 기반의 상품 정체성 이름 1개다. Cafe24 공통 상품명과 네이버 API query의 기준값으로 쓴다.",
         "productName": "상품명은 표준명과 대표 검색어 중심으로 정확하게 만든다.",
         "searchTerms": "검색어설정은 표준어, 현장명, 별칭을 넓게 섞되 무관 인기어와 일부러 만든 오타는 넣지 않는다.",
         "marketSplit": "Cafe24는 실제 판매 채널이 아니라 네이버/쿠팡/ESM/11번가/롯데ON으로 나누기 전의 공통 키워드 풀로 본다.",
@@ -1411,7 +1589,7 @@ SEED_ANALYSIS_POLICY = {
         },
     },
     "sizeQuantityRule": {
-        "quantity": "수량/구성은 검색어에 유지 가능하다. 예: 100p, 300p, 10개, 3세트, 5매, 2입",
+        "quantity": "수량/구성 단독어는 검색어에서 제외하고 OCR/옵션 컬럼으로 관리한다. 예: 100p, 300p, 10개, 3세트, 5매, 2입",
         "singleSpec": "단일 규격 사이즈와 상품 식별 규격은 유지 가능하다. 예: 1M, 2mm, 35mm, M8, 86형, PA66, 304, ABS, EVA",
         "optionSize": "옵션형 상품의 숫자/색상은 원본 옵션 컬럼을 기준으로 판단한다. OCR에서만 나온 숫자 규격은 상품명/검색어/태그에서 제외한다.",
         "optionRange": "옵션 숫자가 230/240/250/260/270처럼 명확하면 필요 시 230-270 사이즈 선택형처럼 압축하고, 전체 옵션값을 나열하지 않는다.",
@@ -3026,6 +3204,7 @@ def hydrate_seed_payload(seed_payload: dict) -> dict:
             continue
         base_gs = text_value(product.get("baseGs")) or split_gs(product.get("gs", ""))[0]
         product["categoryBasis"] = category_basis_from_product(product)
+        attach_base_product_name_plan(product)
         if not isinstance(product.get("naverProvidedNotice"), dict):
             ocr = product.get("ocrAnalysis") if isinstance(product.get("ocrAnalysis"), dict) else {}
             product["naverProvidedNotice"] = build_naver_provided_notice({
@@ -3145,6 +3324,7 @@ def build_seed_products(
             },
         }
         product_record["categoryBasis"] = category_basis_from_product(product_record)
+        attach_base_product_name_plan(product_record)
         products.append(product_record)
     return products
 
@@ -3188,6 +3368,11 @@ def build_keyword_job_products(seed_payload: dict, selected_gs: list[str]) -> li
             "gs": gs,
             "baseGs": base_gs,
             "sourceName": product.get("sourceName", ""),
+            "baseProductName": product.get("baseProductName", ""),
+            "cafe24BaseName": product.get("cafe24BaseName", ""),
+            "baseProductNameCandidates": product.get("baseProductNameCandidates", []),
+            "naverApiQuery": product.get("naverApiQuery", ""),
+            "naverApiPlan": product.get("naverApiPlan", {}),
             "price": product.get("price", 0),
             "supplyPrice": product.get("supplyPrice", 0),
             "salePrice": product.get("salePrice", product.get("price", 0)),
@@ -3240,6 +3425,8 @@ def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = F
   "products": [
     {{
       "gs": "GS코드",
+      "baseProductName": "OCR/이미지 분석으로 확정한 기본상품명 1개",
+      "naverApiQuery": "네이버 쇼핑 API 호출에 사용할 검색어. baseProductName과 같거나 더 정제된 상품 정체성 이름",
       "channels": {{
         "A:네이버": {{
           "title": "상품명",
@@ -3254,6 +3441,10 @@ def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = F
 }}
 
 생성 규칙:
+- 가장 먼저 각 상품마다 `baseProductName` 1개를 확정한다. 이 값은 Cafe24 공통 상품명이며 네이버 쇼핑 API 호출 query의 기준이다.
+- `baseProductName`은 sourceName을 그대로 쓰지 말고 OCR/이미지 분석의 상품 정체성과 용도를 기준으로 만든다.
+- `baseProductName`에는 옵션 규격/색상/수량, 광고문구, 기능문장, 판매자 안내문구를 넣지 않는다. 예: `1963레트롱옷핀 77mm`가 아니라 `레트로 옷핀`, `검은냥스티커 10`이 아니라 `검은 고양이 차량 스티커`.
+- 마켓별 상품명/검색어는 원칙적으로 `baseProductName → 네이버 API 카테고리/상위 키워드 → 5개 마켓 카테고리 매칭` 이후 재작업되는 값이다. 이 입력에 네이버 API 결과가 없으면 `baseProductName`과 OCR 사실을 기준으로 작성하되, sourceName 단독 추측은 피한다.
 - 상품명은 정확하게, 검색어/태그는 넓게 간다.
 - 상품명은 후보 단어를 단순히 이어붙이지 말고 아래 공식으로 만든다.
   1) 대표 상품 정체성 또는 표준명
@@ -3328,6 +3519,9 @@ def append_codex_images_with_budget(cmd: list[str], images: list[str], instructi
 SINGLE_QUANTITY_RE = re.compile(
     r"(?<![0-9A-Za-z가-힣])1\s*(?:개|입|매|p|P|pcs|PCS|pc|PC)(?![0-9A-Za-z가-힣])"
 )
+LOW_VALUE_QUANTITY_TERM_RE = re.compile(
+    r"^\s*\d+\s*(?:개|입|매|장|p|P|pcs|PCS|pc|PC|ea|EA|set|SET|세트|봉|묶음|팩|pack|PACK)\s*$"
+)
 
 
 def strip_low_value_single_quantity(value: str) -> str:
@@ -3336,6 +3530,13 @@ def strip_low_value_single_quantity(value: str) -> str:
     cleaned = re.sub(r"\s*,\s*", ", ", cleaned)
     cleaned = re.sub(r"(?:^|,\s*)$", "", cleaned)
     return cleaned.strip(" ,/")
+
+
+def strip_low_value_quantity_term(value: object) -> str:
+    text = strip_low_value_single_quantity(text_value(value))
+    if LOW_VALUE_QUANTITY_TERM_RE.match(text):
+        return ""
+    return text
 
 
 def split_search_keyword_chunks(value: object) -> list[str]:
@@ -3353,7 +3554,7 @@ def split_search_keyword_chunks(value: object) -> list[str]:
 
 def clean_keyword_terms(value: str) -> str:
     terms = [
-        compact_search_keyword(strip_low_value_single_quantity(term))
+        compact_search_keyword(strip_low_value_quantity_term(term))
         for term in split_search_keyword_chunks(value)
     ]
     return ", ".join(unique_terms([term for term in terms if term]))
@@ -3362,9 +3563,9 @@ def clean_keyword_terms(value: str) -> str:
 def seo_tag_terms(value: object, limit: int = 10) -> list[str]:
     source = value if isinstance(value, list) else split_candidate_terms(value)
     return unique_terms([
-        compact_search_keyword(strip_low_value_single_quantity(term))
+        compact_search_keyword(strip_low_value_quantity_term(term))
         for term in source
-        if compact_search_keyword(strip_low_value_single_quantity(term))
+        if compact_search_keyword(strip_low_value_quantity_term(term))
     ])[:limit]
 
 
@@ -3509,6 +3710,11 @@ def validate_keyword_result(payload: dict, products: list[dict], channels: list[
         raise ValueError("keyword result has no products list")
 
     product_keys = {text_value(product.get("gs")) or text_value(product.get("baseGs")) for product in products}
+    product_by_key = {
+        text_value(product.get("gs")) or text_value(product.get("baseGs")): product
+        for product in products
+        if isinstance(product, dict)
+    }
     normalized_products: list[dict] = []
     for item in raw_products:
         if not isinstance(item, dict):
@@ -3517,6 +3723,14 @@ def validate_keyword_result(payload: dict, products: list[dict], channels: list[
         if gs not in product_keys:
             continue
         raw_channels = item.get("channels") if isinstance(item.get("channels"), dict) else {}
+        source_product = product_by_key.get(gs, {})
+        base_product_name = clean_base_product_name_candidate(
+            item.get("baseProductName")
+            or item.get("cafe24BaseName")
+            or source_product.get("baseProductName")
+            or source_product.get("naverApiQuery")
+        )
+        naver_api_query = clean_base_product_name_candidate(item.get("naverApiQuery") or base_product_name)
         channel_map: dict[str, dict] = {}
         for channel in channels:
             value = raw_channels.get(channel)
@@ -3541,7 +3755,13 @@ def validate_keyword_result(payload: dict, products: list[dict], channels: list[
         diversify_naver_ab_tags(channel_map)
         repair_b_market_keywords_from_a(channel_map)
         if channel_map:
-            normalized_products.append({"gs": gs, "channels": channel_map})
+            normalized_products.append({
+                "gs": gs,
+                "baseProductName": base_product_name,
+                "cafe24BaseName": base_product_name,
+                "naverApiQuery": naver_api_query or base_product_name,
+                "channels": channel_map,
+            })
     if not normalized_products:
         raise ValueError("keyword result has no usable channel data")
     return {
@@ -3553,7 +3773,7 @@ def validate_keyword_result(payload: dict, products: list[dict], channels: list[
 
 def apply_keyword_result_to_seed(seed_payload: dict, keyword_result: dict, channels: list[str]) -> None:
     by_gs = {
-        text_value(item.get("gs")): item.get("channels", {})
+        text_value(item.get("gs")): item
         for item in keyword_result.get("products", [])
         if isinstance(item, dict)
     }
@@ -3561,7 +3781,24 @@ def apply_keyword_result_to_seed(seed_payload: dict, keyword_result: dict, chann
         if not isinstance(product, dict):
             continue
         gs = text_value(product.get("gs"))
-        channel_map = by_gs.get(gs)
+        result_item = by_gs.get(gs)
+        if not result_item:
+            continue
+        base_product_name = clean_base_product_name_candidate(
+            result_item.get("baseProductName")
+            or result_item.get("cafe24BaseName")
+            or result_item.get("naverApiQuery")
+        )
+        if base_product_name:
+            product["baseProductName"] = base_product_name
+            product["cafe24BaseName"] = base_product_name
+            product["naverApiQuery"] = clean_base_product_name_candidate(result_item.get("naverApiQuery")) or base_product_name
+            product["naverApiPlan"] = {
+                **(product.get("naverApiPlan") if isinstance(product.get("naverApiPlan"), dict) else {}),
+                "querySource": "baseProductName",
+                "lastBaseProductNameUpdatedAt": now_text(),
+            }
+        channel_map = result_item.get("channels", {}) if isinstance(result_item.get("channels"), dict) else {}
         if not channel_map:
             continue
         existing = product.get("marketKeywords") if isinstance(product.get("marketKeywords"), dict) else {}
@@ -3586,7 +3823,7 @@ def apply_keyword_result_to_seed(seed_payload: dict, keyword_result: dict, chann
         "provider": keyword_result.get("provider", "codex-cli"),
         "channels": channels,
         "updatedAt": now_text(),
-        "note": "키워드 생성 단계에서 Codex CLI를 호출해 실제 마켓별 상품명/검색어를 생성했다.",
+        "note": "키워드 생성 단계에서 기본상품명 1개를 먼저 확정하고, 이후 네이버 API/마켓 카테고리 매칭 기준으로 실제 마켓별 상품명/검색어를 생성한다.",
     }
 
 

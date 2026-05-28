@@ -178,8 +178,6 @@ class PipelineConfig:
 
     do_flip_lr: bool = True
 
-    logo_path_b: str = ""        # B마켓 전용 로고 경로 (비어있으면 A마켓 로고 사용)
-
     phase: str = "full"          # "full" | "images" | "analysis"
     export_root_override: str = ""  # phase=analysis 시 Phase1의 export_root 재사용
     chunk_size: int = 10             # ocr_only 모드에서 분할 엑셀 개수 (0이면 미분할)

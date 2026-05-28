@@ -1519,38 +1519,7 @@ public sealed class NaverUploadService
 
     private static List<Dictionary<string, object?>> ReadSourceFile(string filePath)
     {
-        // A마켓 시트 또는 기본 시트 사용
-        using var wb = new XLWorkbook(filePath);
-        IXLWorksheet ws;
-        if (wb.TryGetWorksheet("A마켓", out var aSheet))
-            ws = aSheet;
-        else
-            ws = wb.Worksheets.First();
-
-        var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
-        var lastCol = ws.LastColumnUsed()?.ColumnNumber() ?? 1;
-
-        var headers = new Dictionary<int, string>();
-        for (int c = 1; c <= lastCol; c++)
-        {
-            var val = ws.Cell(1, c).GetString().Trim();
-            if (!string.IsNullOrEmpty(val)) headers[c] = val;
-        }
-
-        var rows = new List<Dictionary<string, object?>>();
-        for (int r = 2; r <= lastRow; r++)
-        {
-            var row = new Dictionary<string, object?>();
-            foreach (var (col, name) in headers)
-            {
-                var cell = ws.Cell(r, col);
-                row[name] = cell.IsEmpty() ? null : cell.Value.IsNumber ? cell.Value.GetNumber() : cell.GetString();
-            }
-            row["_row_num"] = r;
-            row["_source_file_path"] = filePath;
-            row["_export_root"] = ResolveExportRoot(filePath);
-            rows.Add(row);
-        }
+        var rows = ExcelSourceReader.ReadSourceRows(filePath, "A마켓");
         ApplyCategoryMatchIfAvailable(filePath, rows);
         return rows;
     }
@@ -1655,10 +1624,7 @@ public sealed class NaverUploadService
     }
 
     private static string NormalizeGsCode(string value)
-    {
-        var match = Regex.Match(value ?? "", @"GS\d{7}[A-Z0-9]*", RegexOptions.IgnoreCase);
-        return match.Success ? match.Value.ToUpperInvariant() : (value ?? "").Trim().ToUpperInvariant();
-    }
+        => ExcelSourceReader.NormalizeGsCode(value);
 
     private static string FirstNonEmpty(IReadOnlyDictionary<string, string> values, params string[] keys)
     {
@@ -1689,19 +1655,7 @@ public sealed class NaverUploadService
         => "\"" + (value ?? "").Replace("\"", "\"\"") + "\"";
 
     private static string ResolveExportRoot(string sourceFilePath)
-    {
-        var path = System.IO.Path.GetFullPath(sourceFilePath);
-        var parent = System.IO.Path.GetDirectoryName(path) ?? "";
-        var parentName = System.IO.Path.GetFileName(parent).ToLower();
-        var grandParent = System.IO.Path.GetDirectoryName(parent) ?? "";
-        var grandName = System.IO.Path.GetFileName(grandParent).ToLower();
-
-        if (parentName.StartsWith("llm_result", StringComparison.OrdinalIgnoreCase) && grandName == "llm_chunks")
-            return System.IO.Path.GetDirectoryName(grandParent) ?? grandParent;
-        if (parentName.StartsWith("llm_result", StringComparison.OrdinalIgnoreCase))
-            return grandParent;
-        return parent;
-    }
+        => ExcelSourceReader.ResolveExportRoot(sourceFilePath);
 
     /// <summary>listing_images 폴더에서 GS코드 가공이미지 파일 찾기 (이미지 선택 반영)</summary>
     private static List<string> FindListingImages(string exportRoot, string gsCode)
@@ -1781,23 +1735,7 @@ public sealed class NaverUploadService
         => row.TryGetValue(key, out var v) && v is not null ? v.ToString()?.Trim() ?? "" : "";
 
     private static string ExtractGsCode(Dictionary<string, object?> row)
-    {
-        foreach (var key in new[] { "자체 상품코드", "GS코드", "상품코드" })
-        {
-            var value = GetStr(row, key);
-            var match = Regex.Match(value, @"GS\d{7}[A-Z0-9]*", RegexOptions.IgnoreCase);
-            if (match.Success) return match.Value.ToUpperInvariant();
-        }
-
-        foreach (var value in row.Values)
-        {
-            var text = value?.ToString() ?? "";
-            var match = Regex.Match(text, @"GS\d{7}[A-Z0-9]*", RegexOptions.IgnoreCase);
-            if (match.Success) return match.Value.ToUpperInvariant();
-        }
-
-        return "";
-    }
+        => ExcelSourceReader.ExtractGsCodeFromRow(row);
 
     private static string CleanMarketProductName(string value)
     {

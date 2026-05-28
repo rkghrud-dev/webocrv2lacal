@@ -6,6 +6,11 @@ import re
 from typing import Iterable
 
 from . import legacy_core as core
+from .keyword_utils import (
+    SPEC_NUMERIC_RE as _SPEC_NUMERIC_RE,
+    ALLOWED_LATIN_TOKEN_RE as _ALLOWED_LATIN_TOKEN_RE,
+    has_disallowed_latin as _has_disallowed_latin,
+)
 
 
 @dataclass
@@ -294,18 +299,8 @@ _IDENTITY_HINTS = {
     "롤러",
 }
 
-_SPEC_NUMERIC_RE = re.compile(
-    r"("
-    r"m\d+|"
-    r"\d+(/\d+)?(mm|cm|m|ml|l|v|w|a|kg|g|호|인치|평|구|단|매|개|입|p|pcs|ea)|"
-    r"\d+(인용|인분|자루|박스)|"
-    r"\d+[xX]\d+"
-    r")",
-    re.IGNORECASE,
-)
 _PRICE_NUMERIC_RE = re.compile(r"\d{2,}(원|₩|만원|천원)")
 _BROKEN_NUMERIC_RE = re.compile(r"^(?:[0-9OI]{3,}|[A-Z]?[0-9OI]{2,}[A-Z]?)$", re.IGNORECASE)
-_ALLOWED_LATIN_TOKEN_RE = re.compile(r"^(?:abs|eva|pvc|pa\d+|pe|pp|pet|diy|m\d+)$", re.IGNORECASE)
 _SIZE_OPTION_TOKEN_RE = re.compile(
     r"("
     r"(?:xs|s|m|l|xl|xxl|xxxl|free|프리|소형|중형|대형|특대형|프리사이즈)|"
@@ -315,17 +310,6 @@ _SIZE_OPTION_TOKEN_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
-
-
-def _has_disallowed_latin(text: str) -> bool:
-    compact = _compact_phrase(text)
-    if not re.search(r"[A-Za-z]", compact):
-        return False
-    without_specs = _SPEC_NUMERIC_RE.sub("", compact)
-    for token in re.findall(r"[A-Za-z]+\d*", without_specs):
-        if not _ALLOWED_LATIN_TOKEN_RE.fullmatch(token):
-            return True
-    return False
 
 
 def generate_market_keyword_packages(

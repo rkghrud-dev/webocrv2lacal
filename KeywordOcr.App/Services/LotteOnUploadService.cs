@@ -768,39 +768,7 @@ public sealed class LotteOnUploadService
 
     private static List<Dictionary<string, object?>> ReadSourceFile(string filePath)
     {
-        using var wb = new XLWorkbook(filePath);
-        IXLWorksheet ws;
-        if (wb.TryGetWorksheet("분리추출후", out var mainSheet))
-            ws = mainSheet;
-        else if (wb.TryGetWorksheet("A마켓", out var aSheet))
-            ws = aSheet;
-        else
-            ws = wb.Worksheets.First();
-
-        var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
-        var lastCol = ws.LastColumnUsed()?.ColumnNumber() ?? 1;
-        var headers = new Dictionary<int, string>();
-        for (var c = 1; c <= lastCol; c++)
-        {
-            var val = ws.Cell(1, c).GetString().Trim();
-            if (!string.IsNullOrWhiteSpace(val)) headers[c] = val;
-        }
-
-        var rows = new List<Dictionary<string, object?>>();
-        for (var r = 2; r <= lastRow; r++)
-        {
-            var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-            foreach (var (col, name) in headers)
-            {
-                var cell = ws.Cell(r, col);
-                row[name] = cell.IsEmpty() ? null : cell.Value.IsNumber ? cell.Value.GetNumber() : cell.GetString();
-            }
-            row["_row_num"] = r;
-            row["_source_file_path"] = filePath;
-            row["_export_root"] = ResolveExportRoot(filePath);
-            rows.Add(row);
-        }
-
+        var rows = ExcelSourceReader.ReadSourceRows(filePath, "분리추출후", "A마켓");
         ApplyCategoryMatchIfAvailable(filePath, rows);
         return rows;
     }
@@ -914,10 +882,7 @@ public sealed class LotteOnUploadService
     }
 
     private static string NormalizeGsCode(string value)
-    {
-        var match = Regex.Match(value ?? "", @"GS\d{7}[A-Z0-9]*", RegexOptions.IgnoreCase);
-        return match.Success ? match.Value.ToUpperInvariant() : (value ?? "").Trim().ToUpperInvariant();
-    }
+        => ExcelSourceReader.NormalizeGsCode(value);
 
     private static string FirstNonEmptyString(IReadOnlyDictionary<string, string> values, params string[] keys)
     {
@@ -931,17 +896,7 @@ public sealed class LotteOnUploadService
 
     private static string ResolveExportRoot(string sourceFilePath)
     {
-        var path = Path.GetFullPath(sourceFilePath);
-        var parent = Path.GetDirectoryName(path) ?? "";
-        var parentName = Path.GetFileName(parent).ToLowerInvariant();
-        var grandParent = Path.GetDirectoryName(parent) ?? "";
-        var grandName = Path.GetFileName(grandParent).ToLowerInvariant();
-
-        if (parentName.StartsWith("llm_result", StringComparison.OrdinalIgnoreCase) && grandName == "llm_chunks")
-            return Path.GetDirectoryName(grandParent) ?? grandParent;
-        if (parentName.StartsWith("llm_result", StringComparison.OrdinalIgnoreCase))
-            return grandParent;
-        return parent;
+        return ExcelSourceReader.ResolveExportRoot(sourceFilePath);
     }
 
     private static string? ResolveDefaultHomeCafe24TokenPath()
@@ -1401,23 +1356,7 @@ public sealed class LotteOnUploadService
     }
 
     private static string ExtractGsCode(IReadOnlyDictionary<string, object?> row)
-    {
-        foreach (var key in new[] { "자체 상품코드", "GS코드", "상품코드" })
-        {
-            var value = GetStr(row, key);
-            var match = Regex.Match(value, @"GS\d{7}[A-Z0-9]*", RegexOptions.IgnoreCase);
-            if (match.Success) return match.Value.ToUpperInvariant();
-        }
-
-        foreach (var value in row.Values)
-        {
-            var text = value?.ToString() ?? "";
-            var match = Regex.Match(text, @"GS\d{7}[A-Z0-9]*", RegexOptions.IgnoreCase);
-            if (match.Success) return match.Value.ToUpperInvariant();
-        }
-
-        return "";
-    }
+        => ExcelSourceReader.ExtractGsCodeFromRow(row);
 
     private static string GetProductName(IReadOnlyDictionary<string, object?> row)
         => GetStr(row, "홈런_롯데ON상품명")

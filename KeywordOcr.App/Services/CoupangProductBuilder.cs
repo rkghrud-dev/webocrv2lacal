@@ -22,45 +22,7 @@ public static class CoupangProductBuilder
     // ── 엑셀 읽기 ──────────────────────────────────
 
     public static List<Dictionary<string, object?>> ReadSourceFile(string filePath)
-    {
-        using var wb = new XLWorkbook(filePath);
-        IXLWorksheet ws;
-        if (wb.TryGetWorksheet("분리추출후", out var splitSheet))
-            ws = splitSheet;
-        else if (wb.TryGetWorksheet("B마켓", out var bSheet))
-            ws = bSheet;
-        else
-            ws = wb.Worksheets.First();
-
-        var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
-        var lastCol = ws.LastColumnUsed()?.ColumnNumber() ?? 1;
-
-        // 헤더
-        var headers = new Dictionary<int, string>();
-        for (int c = 1; c <= lastCol; c++)
-        {
-            var val = ws.Cell(1, c).GetString().Trim();
-            if (!string.IsNullOrEmpty(val))
-                headers[c] = val;
-        }
-
-        var rows = new List<Dictionary<string, object?>>();
-        for (int r = 2; r <= lastRow; r++)
-        {
-            var row = new Dictionary<string, object?>();
-            foreach (var (col, name) in headers)
-            {
-                var cell = ws.Cell(r, col);
-                row[name] = cell.IsEmpty() ? null : cell.Value.IsNumber ? cell.Value.GetNumber() : cell.GetString();
-            }
-            row["_row_num"] = r;
-            row["_source_file_path"] = filePath;
-            row["_export_root"] = ResolveExportRoot(filePath);
-            rows.Add(row);
-        }
-
-        return rows;
-    }
+        => ExcelSourceReader.ReadSourceRows(filePath, "분리추출후", "B마켓");
 
     // ── 상품 JSON 빌드 ─────────────────────────────
 
@@ -921,17 +883,7 @@ public static class CoupangProductBuilder
 
     private static string ResolveExportRoot(string sourceFilePath)
     {
-        var path = Path.GetFullPath(sourceFilePath);
-        var parent = Path.GetDirectoryName(path) ?? "";
-        var parentName = Path.GetFileName(parent).ToLower();
-        var grandParent = Path.GetDirectoryName(parent) ?? "";
-        var grandName = Path.GetFileName(grandParent).ToLower();
-
-        if (parentName == "llm_result" && grandName == "llm_chunks")
-            return Path.GetDirectoryName(grandParent) ?? grandParent;
-        if (parentName is "llm_result" or "llm_result_v5_cli" or "llm_result_v4_cli")
-            return grandParent;
-        return parent;
+        return ExcelSourceReader.ResolveExportRoot(sourceFilePath);
     }
 
     // ── 유틸 ───────────────────────────────────────

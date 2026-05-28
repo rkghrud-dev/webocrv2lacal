@@ -766,16 +766,7 @@ public sealed class CoupangUploadService
     }
 
     private static string ExtractGsCode(Dictionary<string, object?> row)
-    {
-        foreach (var value in new[] { GetStr(row, "자체 상품코드"), GetStr(row, "상품코드"), GetStr(row, "상품명") })
-        {
-            var match = Regex.Match(value ?? "", @"GS\d{7}[A-Z0-9]*", RegexOptions.IgnoreCase);
-            if (match.Success)
-                return match.Value.Trim().ToUpperInvariant();
-        }
-
-        return "";
-    }
+        => ExcelSourceReader.ExtractGsCodeFromRow(row);
 
     /// <summary>listing_images 폴더에서 GS코드 가공이미지 파일 찾기 (이미지 선택 반영)</summary>
     private static List<string> FindListingImages(string exportRoot, string gsCode)
