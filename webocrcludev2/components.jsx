@@ -4693,7 +4693,7 @@ const GALLERY_SLIDES = [
   { eyebrow: '02 — SOURCE REVIEW', title: '원본 확인',
     render: () => (
       <ol className="gal-stepper">
-        {['원본 입력','원본 확인','시드 검수/마켓 선택','키워드 생성','업로드','결과 확인'].map((t, i) => (
+        {['원본 입력','원본 확인','시드 검수/마켓 선택','키워드 생성','카테고리 매칭','업로드','결과 확인'].map((t, i) => (
           <li key={i} className={i < 2 ? 'done' : i === 2 ? 'active' : ''}><span>{i+1}</span><em>{t}</em></li>
         ))}
       </ol>
@@ -4731,7 +4731,21 @@ const GALLERY_SLIDES = [
       </div>
     ),
   },
-  { eyebrow: '05 — UPLOAD', title: '업로드',
+  { eyebrow: '05 — CATEGORY', title: '카테고리 매칭',
+    render: () => (
+      <div className="gal-category-mock">
+        <div className="gal-trow gal-thead"><span>GS</span><span>네이버 기준</span><span>쿠팡</span><span>11번가</span><span>롯데ON</span></div>
+        {[
+          ['GS010111','공구 > 체결용품 > 나사','1순위 0.82','1순위 0.77','검수 0.61'],
+          ['GS010112','문구 > 클립/집게/핀','검수 0.58','1순위 0.81','1순위 0.74'],
+          ['GS010113','DIY자재 > 가구부속품','1순위 0.88','검수 0.63','수동검색'],
+        ].map((row, i) => (
+          <div className="gal-trow" key={i}>{row.map((cell, ci) => <span key={ci}>{cell}</span>)}</div>
+        ))}
+      </div>
+    ),
+  },
+  { eyebrow: '06 — UPLOAD', title: '업로드',
     render: () => (
       <div className="gal-upload-mock">
         <div className="gal-bignum"><span className="upload-big-num">142</span><span className="upload-big-den">/ 287</span></div>
@@ -4744,7 +4758,7 @@ const GALLERY_SLIDES = [
       </div>
     ),
   },
-  { eyebrow: '06 — RESULTS', title: '결과 확인',
+  { eyebrow: '07 — RESULTS', title: '결과 확인',
     render: () => (
       <div className="gal-matrix-mock">
         <div className="gal-mrow gal-mhead"><span/>{['C24','N','C','L','11','E'].flatMap(m => [m+'·A',m+'·B']).map((h,i) => <span key={i}>{h}</span>)}</div>

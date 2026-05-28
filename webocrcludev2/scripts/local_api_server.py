@@ -60,6 +60,21 @@ ACTIVE_PROCESS_LOCK = threading.Lock()
 CANCELLED_JOB_IDS: set[str] = set()
 CATEGORY_CACHE: dict[str, list[dict[str, object]]] = {}
 
+try:
+    from category_matching_db import (
+        DEFAULT_DB_PATH as CATEGORY_MATCHING_DB_PATH,
+        approve_mapping as approve_category_mapping_rule,
+        get_approved_mapping as get_approved_category_mapping,
+        get_candidates as get_category_match_candidates,
+        search_categories as search_category_matching_db,
+    )
+except Exception:
+    CATEGORY_MATCHING_DB_PATH = ROOT / "data" / "category" / "category_matching.db"
+    approve_category_mapping_rule = None
+    get_approved_category_mapping = None
+    get_category_match_candidates = None
+    search_category_matching_db = None
+
 
 def category_text(value: object) -> str:
     if value is None:
@@ -110,6 +125,10 @@ def parse_category_leaf(value: object) -> bool:
 
 def category_path_parts(path: str) -> list[str]:
     return [part.strip() for part in re.split(r"\s*>\s*|/", path or "") if part.strip()]
+
+
+def display_category_path(value: object) -> str:
+    return " > ".join(part.strip() for part in re.split(r"\s*>\s*", category_text(value)) if part.strip())
 
 
 def category_query_tokens(value: object) -> list[str]:
@@ -1171,6 +1190,116 @@ def category_bundle_reference(query: object, limit: int = 8) -> dict[str, object
         "anchor": naver_anchor,
         "items": items_by_market,
         "selections": selections,
+    }
+
+
+CATEGORY_MATCH_TARGETS = (
+    ("coupang", "쿠팡", ("coupang",)),
+    ("esm", "ESM", ("esm", "auction", "gmarket")),
+    ("11st", "11번가", ("11st", "elevenst")),
+    ("lotteon", "롯데ON", ("lotte_standard", "lotte_display", "lotte_item", "lotteon")),
+)
+
+
+def product_category_match_source(product: dict[str, object]) -> dict[str, object]:
+    categories = product.get("categories") if isinstance(product.get("categories"), dict) else {}
+    review = product.get("marketCategoryReview") if isinstance(product.get("marketCategoryReview"), dict) else {}
+    naver_review = review.get("naver") if isinstance(review.get("naver"), dict) else {}
+    labels = categories.get("labels") if isinstance(categories.get("labels"), dict) else {}
+    code = category_text(categories.get("naver") or naver_review.get("code") or naver_review.get("categoryId"))
+    path = (
+        category_text(categories.get("naverPath"))
+        or category_text(labels.get("naver"))
+        or category_text(naver_review.get("path"))
+    )
+    return {"code": code, "path": display_category_path(path), "review": naver_review}
+
+
+def product_current_market_category(product: dict[str, object], keys: tuple[str, ...]) -> dict[str, str]:
+    categories = product.get("categories") if isinstance(product.get("categories"), dict) else {}
+    labels = categories.get("labels") if isinstance(categories.get("labels"), dict) else {}
+    for key in keys:
+        code = category_text(categories.get(key))
+        if not code:
+            continue
+        path = (
+            category_text(categories.get(f"{key}Path"))
+            or category_text(labels.get(key))
+            or category_text(categories.get(f"{key}Name"))
+        )
+        return {"key": key, "code": code, "path": display_category_path(path)}
+    return {"key": keys[0] if keys else "", "code": "", "path": ""}
+
+
+def category_candidate_status(score: object, review_status: str = "") -> str:
+    status = category_text(review_status)
+    try:
+        value = float(score or 0)
+    except Exception:
+        value = 0.0
+    if status == "auto_ready" or value >= 0.80:
+        return "auto"
+    if status == "review_priority" or value >= 0.55:
+        return "review"
+    return "manual"
+
+
+def category_match_preview(products: list[dict[str, object]], limit: int = 3) -> dict[str, object]:
+    if get_category_match_candidates is None:
+        return {
+            "ok": False,
+            "error": "category_matching_db helper unavailable",
+            "dbPath": str(CATEGORY_MATCHING_DB_PATH),
+            "rows": [],
+        }
+    rows: list[dict[str, object]] = []
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        source = product_category_match_source(product)
+        source_code = category_text(source.get("code"))
+        market_payload: dict[str, object] = {}
+        for market_key, label, category_keys in CATEGORY_MATCH_TARGETS:
+            current = product_current_market_category(product, category_keys)
+            approved = (
+                get_approved_category_mapping(source_code, market_key)
+                if source_code and get_approved_category_mapping is not None
+                else None
+            )
+            candidates: list[dict[str, object]] = []
+            if source_code:
+                for index, item in enumerate(get_category_match_candidates(source_code, market_key, limit=limit) or [], 1):
+                    score = item.get("confidence_score", 0)
+                    candidates.append({
+                        "rank": index,
+                        "code": category_text(item.get("target_category_id")),
+                        "path": display_category_path(item.get("target_category_path")),
+                        "leaf": category_text(item.get("target_leaf")),
+                        "score": score,
+                        "status": category_candidate_status(score, category_text(item.get("review_status"))),
+                        "method": category_text(item.get("match_method")),
+                        "reviewStatus": category_text(item.get("review_status")),
+                        "sourceFile": category_text(item.get("source_file")),
+                    })
+            market_payload[market_key] = {
+                "label": label,
+                "current": current,
+                "approved": approved,
+                "candidates": candidates,
+                "needsReview": not approved and (not candidates or candidates[0].get("status") != "auto"),
+            }
+        rows.append({
+            "gs": category_text(product.get("gs")),
+            "name": category_text(product.get("name") or product.get("sourceName") or product.get("originalName")),
+            "query": category_text(product.get("query") or product.get("baseProductName") or product.get("name")),
+            "naver": source,
+            "markets": market_payload,
+        })
+    return {
+        "ok": True,
+        "dbPath": str(CATEGORY_MATCHING_DB_PATH),
+        "rows": rows,
+        "targets": [{"key": key, "label": label} for key, label, _keys in CATEGORY_MATCH_TARGETS],
     }
 
 
@@ -7722,6 +7851,32 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
             bundle = category_bundle_reference(query, limit)
             self.send_json({"ok": True, **bundle})
             return
+        if path == "/api/category-match/search":
+            params = parse_qs(parsed.query)
+            market = (params.get("market") or [""])[0]
+            query = (params.get("q") or [""])[0]
+            category_type = (params.get("type") or [""])[0] or None
+            include_excluded = (params.get("includeExcluded") or [""])[0].lower() in {"1", "true", "yes", "y"}
+            try:
+                limit = int((params.get("limit") or ["30"])[0])
+            except Exception:
+                limit = 30
+            if search_category_matching_db is None:
+                self.send_json({"ok": False, "error": "category DB helper unavailable", "items": []}, 500)
+                return
+            self.send_json({
+                "ok": True,
+                "market": normalise_category_market(market),
+                "query": query,
+                "items": search_category_matching_db(
+                    normalise_category_market(market),
+                    query,
+                    limit=limit,
+                    category_type=category_type,
+                    include_excluded=include_excluded,
+                ),
+            })
+            return
         if path == "/api/seed":
             params = parse_qs(parsed.query)
             seed_path = resolve_seed_path((params.get("path") or params.get("name") or [""])[0])
@@ -7796,6 +7951,32 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
                 return
             if path == "/api/market-upload":
                 self.handle_market_upload()
+                return
+            if path == "/api/category-match/preview":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                products = payload.get("products") if isinstance(payload.get("products"), list) else []
+                limit = int(payload.get("limit") or 3)
+                self.send_json(category_match_preview(products, limit))
+                return
+            if path == "/api/category-match/approve":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                if approve_category_mapping_rule is None:
+                    self.send_json({"ok": False, "error": "category DB helper unavailable"}, 500)
+                    return
+                rule = approve_category_mapping_rule(
+                    source_category_id=category_text(payload.get("sourceCategoryId")),
+                    source_category_path=category_text(payload.get("sourceCategoryPath")),
+                    source_leaf=category_text(payload.get("sourceLeaf")),
+                    target_market=normalise_category_market(payload.get("targetMarket")),
+                    target_category_id=category_text(payload.get("targetCategoryId")),
+                    target_category_path=category_text(payload.get("targetCategoryPath")),
+                    target_leaf=category_text(payload.get("targetLeaf")),
+                    keyword_signature=category_text(payload.get("keywordSignature")),
+                    product_group=category_text(payload.get("productGroup")),
+                    approved_by="webocr",
+                    notes=category_text(payload.get("notes")),
+                )
+                self.send_json({"ok": True, "rule": rule})
                 return
             if path == "/api/emergency-codex-context":
                 payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")

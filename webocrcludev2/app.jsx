@@ -31,6 +31,7 @@ const PIPELINE_STEPS = [
   { key: 'source', title: '원본 확인', stage: 'basic', fileMode: 'source' },
   { key: 'seed-setup', title: '시드 검수/마켓 선택', stage: 'basic', fileMode: 'seed' },
   { key: 'keyword', title: '키워드 생성', stage: 'keyword' },
+  { key: 'category-match', title: '카테고리 매칭', stage: 'category-match' },
   { key: 'upload', title: '업로드', stage: 'upload' },
   { key: 'result', title: '결과 확인', stage: 'result' },
 ];
@@ -207,6 +208,33 @@ function rowsForFile(file) {
     A: ['muted','muted','muted','muted','muted','muted'],
     B: ['muted','muted','muted','muted','muted','muted'],
   }));
+}
+
+function categoryMatchProductPayload(row = {}) {
+  const product = row.seedProduct || {};
+  return {
+    gs: row.gs || product.gs || '',
+    name: row.name || product.reviewFields?.productName || product.sourceName || '',
+    originalName: row.originalName || product.sourceName || row.name || '',
+    query: product.baseProductName || product.generatedKeywordSeed?.baseProductName || row.name || '',
+    categories: {
+      ...(product.categories || {}),
+      ...(row.categories || {}),
+    },
+    categoryPaths: product.categoryPaths || row.categoryPaths || {},
+    marketCategoryReview: product.marketCategoryReview || row.marketCategoryReview || {},
+  };
+}
+
+function scoreTone(score, status = '') {
+  const value = Number(score || 0);
+  if (status === 'auto' || value >= 0.8) return 'auto';
+  if (status === 'review' || value >= 0.55) return 'review';
+  return 'manual';
+}
+
+function categorySelectionKey(gs, marketKey) {
+  return `${gs || ''}::${marketKey || ''}`;
 }
 
 function ProductManagerBrowser({ onImport, addLog }) {
@@ -791,6 +819,10 @@ function App() {
   const [seedExportBusy, setSeedExportBusy] = useState(false);
   const [sourceSeedJob, setSourceSeedJob] = useState(null);
   const [keywordJob, setKeywordJob] = useState(null);
+  const [categoryMatch, setCategoryMatch] = useState({ status: 'idle', rows: [], targets: [], error: '' });
+  const [categorySelections, setCategorySelections] = useState({});
+  const [categorySearchPanel, setCategorySearchPanel] = useState(null);
+  const [categorySaving, setCategorySaving] = useState(false);
   const [uploadQueue, setUploadQueue] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('webocr.uploadQueue') || '{}');
@@ -1509,6 +1541,7 @@ function App() {
   const getFlowKey = () => {
     if (stage === 'drop') return 'drop';
     if (stage === 'keyword') return 'keyword';
+    if (stage === 'category-match') return 'category-match';
     if (stage === 'upload') return 'upload';
     if (stage === 'result') return 'result';
     if (fileMode === 'source') return 'source';
@@ -1537,6 +1570,7 @@ function App() {
       ['basic', 'source'],
       ['basic', 'seed'],
       ['keyword', null],
+      ['category-match', null],
       ['upload', null],
       ['result', null],
     ];
@@ -1568,6 +1602,18 @@ function App() {
     const marketKeywords = row.marketKeywords || row.seedProduct?.marketKeywords || {};
     return Object.keys(marketKeywords).length > 0;
   });
+  const categoryMatchRows = categoryMatch.rows || [];
+  const categoryMatchTargets = categoryMatch.targets?.length
+    ? categoryMatch.targets
+    : [
+        {key:'coupang', label:'쿠팡'},
+        {key:'esm', label:'ESM'},
+        {key:'11st', label:'11번가'},
+        {key:'lotteon', label:'롯데ON'},
+      ];
+  const categoryNeedsReviewCount = categoryMatchRows.reduce((total, row) => {
+    return total + Object.values(row.markets || {}).filter((market) => market?.needsReview).length;
+  }, 0);
   const canUseSeedKeywords = keywordHasResults;
   const sourceSeedProgress = Math.max(0, Math.min(100, Number(
     sourceSeedJob?.progressPercent
@@ -1581,6 +1627,141 @@ function App() {
   )));
   const keywordStage = keywordJob?.currentStage
     || (keywordRunning ? '키워드 생성 실행중' : keywordJob?.status === 'completed' ? '키워드 생성 완료' : '');
+  const loadCategoryMatchPreview = useCallback(async () => {
+    const targetRows = (selectedGs.size ? productRows.filter((row) => selectedGs.has(row.gs)) : productRows);
+    if (!targetRows.length) {
+      setCategoryMatch({ status: 'empty', rows: [], targets: [], error: '' });
+      return;
+    }
+    setCategoryMatch((prev) => ({ ...prev, status: 'loading', error: '' }));
+    try {
+      const response = await fetch('/api/category-match/preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          limit: 3,
+          products: targetRows.map(categoryMatchProductPayload),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `category match ${response.status}`);
+      setCategoryMatch({
+        status: 'ready',
+        rows: payload.rows || [],
+        targets: payload.targets || [],
+        error: '',
+        dbPath: payload.dbPath || '',
+      });
+      setCategorySelections((prev) => {
+        const next = {};
+        (payload.rows || []).forEach((row) => {
+          Object.entries(row.markets || {}).forEach(([marketKey, market]) => {
+            const selected = market.approved
+              ? {
+                  code: market.approved.target_category_id,
+                  path: market.approved.target_category_path,
+                  leaf: market.approved.target_leaf,
+                  source: 'approved',
+                }
+              : (market.candidates || [])[0];
+            if (selected?.code) {
+              next[categorySelectionKey(row.gs, marketKey)] = {
+                ...selected,
+                marketKey,
+                gs: row.gs,
+              };
+            }
+          });
+        });
+        return {...prev, ...next};
+      });
+    } catch (error) {
+      setCategoryMatch((prev) => ({ ...prev, status: 'error', error: error.message }));
+      addLog(`카테고리 매칭 후보 로드 실패: ${error.message}`);
+    }
+  }, [productRows, selectedGs]);
+  useEffect(() => {
+    if (stage !== 'category-match' || !file) return;
+    loadCategoryMatchPreview();
+  }, [stage, file, loadCategoryMatchPreview]);
+  const selectCategoryCandidate = (row, marketKey, candidate) => {
+    if (!row?.gs || !marketKey || !candidate?.code) return;
+    setCategorySelections((prev) => ({
+      ...prev,
+      [categorySelectionKey(row.gs, marketKey)]: {
+        ...candidate,
+        marketKey,
+        gs: row.gs,
+      },
+    }));
+  };
+  const openCategorySearchPanel = (row, target, market) => {
+    setCategorySearchPanel({
+      row,
+      target,
+      market,
+      query: '',
+      status: 'idle',
+      results: [],
+      error: '',
+    });
+  };
+  const runCategorySearch = async (panel = categorySearchPanel) => {
+    if (!panel?.target?.key) return;
+    const query = panel.query || panel.row?.name || '';
+    setCategorySearchPanel((prev) => prev ? {...prev, status: 'loading', error: ''} : prev);
+    try {
+      const response = await fetch(`/api/category-match/search?market=${encodeURIComponent(panel.target.key)}&q=${encodeURIComponent(query)}&limit=40`);
+      const payload = await response.json();
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error || `category search ${response.status}`);
+      setCategorySearchPanel((prev) => prev ? {...prev, status: 'ready', results: payload.items || [], error: ''} : prev);
+    } catch (error) {
+      setCategorySearchPanel((prev) => prev ? {...prev, status: 'error', error: error.message} : prev);
+    }
+  };
+  const saveCategoryApprovals = async () => {
+    const approvals = [];
+    categoryMatchRows.forEach((row) => {
+      categoryMatchTargets.forEach((target) => {
+        const selected = categorySelections[categorySelectionKey(row.gs, target.key)];
+        if (!row.naver?.code || !selected?.code) return;
+        approvals.push({
+          gs: row.gs,
+          sourceCategoryId: row.naver.code,
+          sourceCategoryPath: row.naver.path,
+          targetMarket: target.key,
+          targetCategoryId: selected.code,
+          targetCategoryPath: selected.path,
+          targetLeaf: selected.leaf || '',
+          notes: `WEBOCR category-match approval ${row.gs || ''}`,
+        });
+      });
+    });
+    if (!approvals.length) {
+      addLog('카테고리 저장 중단: 선택된 후보가 없습니다.');
+      return;
+    }
+    setCategorySaving(true);
+    let saved = 0;
+    try {
+      for (const approval of approvals) {
+        const response = await fetch('/api/category-match/approve', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(approval),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload?.ok) throw new Error(payload?.error || `approve ${response.status}`);
+        saved += 1;
+      }
+      addLog(`카테고리 승인 저장 완료: ${saved}건`);
+      await loadCategoryMatchPreview();
+    } catch (error) {
+      addLog(`카테고리 승인 저장 실패: ${error.message}`);
+    } finally {
+      setCategorySaving(false);
+    }
+  };
   const moveToFlowStep = (step) => {
     setSelected(null);
     if (!step) return;
@@ -1642,6 +1823,10 @@ function App() {
       moveToFlowStep(PIPELINE_STEPS[currentFlowIndex + 1]);
       return;
     }
+    if (currentFlowKey === 'category-match') {
+      moveToFlowStep(PIPELINE_STEPS[currentFlowIndex + 1]);
+      return;
+    }
     if (currentFlowKey === 'upload') {
       setStage('result');
       return;
@@ -1661,7 +1846,9 @@ function App() {
       : currentFlowKey === 'seed-setup'
         ? canUseSeedKeywords ? '키워드 검수' : '키워드 생성'
             : currentFlowKey === 'keyword'
-              ? canUseSeedKeywords ? '업로드 화면' : '키워드 생성 시작'
+              ? canUseSeedKeywords ? '카테고리 매칭' : '키워드 생성 시작'
+              : currentFlowKey === 'category-match'
+                ? '업로드 화면'
               : currentFlowKey === 'upload'
                 ? '결과 확인'
               : currentFlowKey === 'result'
@@ -1890,7 +2077,7 @@ function App() {
             <>
               <div className="section-head">
                 <div className="left">
-                  <span className="crumbs">STEP 05 · 마켓별 키워드 생성 · keyword_seed</span>
+                  <span className="crumbs">STEP 04 · 마켓별 키워드 생성 · keyword_seed</span>
                   <h2>마켓별 키워드 생성</h2>
                 </div>
                 <AccountSummary counts={counts}/>
@@ -1920,11 +2107,195 @@ function App() {
             </>
           )}
 
+          {stage === 'category-match' && file && (
+            <>
+              <div className="section-head">
+                <div className="left">
+                  <span className="crumbs">STEP 05 · 카테고리 매칭 · category_match</span>
+                  <h2>마켓별 카테고리 매칭</h2>
+                </div>
+                <AccountSummary counts={counts}/>
+                <div className="summary">
+                  <div><small>대상</small><strong>{selectedGs.size}</strong></div>
+                  <div><small>기준</small><strong style={{color:'var(--color-quizlet-violet)'}}>네이버</strong></div>
+                  <div><small>검수</small><strong>{categoryNeedsReviewCount}</strong></div>
+                  <AuroraBtn onClick={saveCategoryApprovals} disabled={categorySaving || categoryMatch.status === 'loading'}>
+                    {categorySaving ? '저장 중' : '선택 저장'}
+                  </AuroraBtn>
+                  <GhostBtn onClick={loadCategoryMatchPreview} disabled={categoryMatch.status === 'loading'}>
+                    {categoryMatch.status === 'loading' ? '불러오는 중' : '새로고침'}
+                  </GhostBtn>
+                </div>
+              </div>
+              <div className="surface category-match-stage">
+                <div className="category-match-stage__head">
+                  <div>
+                    <span className="t-eyebrow">CATEGORY REVIEW</span>
+                    <h3>네이버 기준 카테고리로 마켓별 후보를 검수</h3>
+                  </div>
+                  <Pill status={categoryMatch.status === 'ready' ? 'uploaded' : categoryMatch.status === 'error' ? 'failed' : 'targeted'}>
+                    {categoryMatch.status === 'ready' ? 'DB 연결 완료' : categoryMatch.status === 'error' ? '연결 실패' : 'DB 조회'}
+                  </Pill>
+                </div>
+                {categoryMatch.status === 'error' && (
+                  <div className="category-match-stage__note is-error">{categoryMatch.error}</div>
+                )}
+                {categoryMatch.status === 'loading' && (
+                  <div className="category-match-stage__note">카테고리 후보를 불러오는 중입니다.</div>
+                )}
+                {categoryMatch.status !== 'loading' && !categoryMatchRows.length && (
+                  <div className="category-match-stage__note">표시할 상품이 없습니다. 이전 단계에서 상품을 선택한 뒤 다시 들어오세요.</div>
+                )}
+                {!!categoryMatchRows.length && (
+                  <div className="category-match-table-wrap">
+                    <table className="category-match-table">
+                      <thead>
+                        <tr>
+                          <th>GS / 상품명</th>
+                          <th>네이버 기준</th>
+                          {categoryMatchTargets.map((target) => <th key={target.key}>{target.label}</th>)}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {categoryMatchRows.map((row) => (
+                          <tr key={row.gs || row.name}>
+                            <td className="category-match-product">
+                              <strong className="t-mono">{row.gs || '-'}</strong>
+                              <span>{row.name || '-'}</span>
+                              {row.query && <em>query: {row.query}</em>}
+                            </td>
+                            <td className="category-match-naver">
+                              <strong>{row.naver?.code || '-'}</strong>
+                              <span>{row.naver?.path || '-'}</span>
+                            </td>
+                            {categoryMatchTargets.map((target) => {
+                              const market = row.markets?.[target.key] || {};
+                              const candidates = market.candidates || [];
+                              const current = market.current || {};
+                              const selected = categorySelections[categorySelectionKey(row.gs, target.key)];
+                              const selectedIsCandidate = selected?.code && candidates.some((candidate) => (
+                                candidate.code === selected.code && candidate.path === selected.path
+                              ));
+                              return (
+                                <td key={`${row.gs}-${target.key}`} className="category-match-market">
+                                  <div className="category-market-actions">
+                                    <button type="button" onClick={() => openCategorySearchPanel(row, target, market)}>
+                                      검색
+                                    </button>
+                                  </div>
+                                  {current.code && (
+                                    <div className="category-current">
+                                      <span>현재</span>
+                                      <strong>{current.code}</strong>
+                                      <em>{current.path || '-'}</em>
+                                    </div>
+                                  )}
+                                  {market.approved && (
+                                    <div className="category-approved">
+                                      승인 {market.approved.target_category_id}
+                                    </div>
+                                  )}
+                                  {candidates.length ? candidates.map((candidate) => {
+                                    const tone = scoreTone(candidate.score, candidate.status);
+                                    const active = selected?.code === candidate.code && selected?.path === candidate.path;
+                                    return (
+                                      <button
+                                        type="button"
+                                        className={`category-candidate is-${tone}${active ? ' is-selected' : ''}`}
+                                        key={`${candidate.rank}-${candidate.code}-${candidate.path}`}
+                                        onClick={() => selectCategoryCandidate(row, target.key, candidate)}>
+                                        <div>
+                                          <strong>{candidate.rank}. {tone === 'auto' ? '자동' : tone === 'review' ? '검수' : '수동'} {Number(candidate.score || 0).toFixed(3)}</strong>
+                                          <code>{candidate.code || '-'}</code>
+                                        </div>
+                                        <span>{candidate.path || '-'}</span>
+                                      </button>
+                                    );
+                                  }) : (
+                                    <div className="category-candidate is-manual">
+                                      <div><strong>수동검색 필요</strong><code>-</code></div>
+                                      <span>후보 없음</span>
+                                    </div>
+                                  )}
+                                  {selected?.code && !selectedIsCandidate && (
+                                    <button
+                                      type="button"
+                                      className="category-candidate is-selected is-direct"
+                                      onClick={() => selectCategoryCandidate(row, target.key, selected)}>
+                                      <div>
+                                        <strong>직접 선택</strong>
+                                        <code>{selected.code}</code>
+                                      </div>
+                                      <span>{selected.path || '-'}</span>
+                                    </button>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+              {categorySearchPanel && (
+                <div className="category-search-backdrop" onClick={() => setCategorySearchPanel(null)}>
+                  <div className="category-search-modal" onClick={(event) => event.stopPropagation()}>
+                    <div className="category-search-head">
+                      <div>
+                        <span className="t-eyebrow">{categorySearchPanel.target?.label} CATEGORY SEARCH</span>
+                        <h3>{categorySearchPanel.row?.gs} 카테고리 직접 선택</h3>
+                      </div>
+                      <IconBtn icon={<IconClose size={16}/>} label="닫기" onClick={() => setCategorySearchPanel(null)}/>
+                    </div>
+                    <div className="category-search-form">
+                      <input
+                        value={categorySearchPanel.query || ''}
+                        onChange={(event) => setCategorySearchPanel((prev) => prev ? {...prev, query: event.target.value} : prev)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') runCategorySearch();
+                        }}
+                        placeholder={`${categorySearchPanel.target?.label || ''} 카테고리 검색`}
+                      />
+                      <AuroraBtn icon={<IconSearch size={16}/>} onClick={() => runCategorySearch()}>
+                        검색
+                      </AuroraBtn>
+                    </div>
+                    {categorySearchPanel.status === 'error' && <div className="category-match-stage__note is-error">{categorySearchPanel.error}</div>}
+                    {categorySearchPanel.status === 'loading' && <div className="category-match-stage__note">검색 중입니다.</div>}
+                    <div className="category-search-results">
+                      {(categorySearchPanel.results || []).map((item) => (
+                        <button
+                          type="button"
+                          key={`${item.category_id}-${item.category_path}`}
+                          onClick={() => {
+                            selectCategoryCandidate(categorySearchPanel.row, categorySearchPanel.target.key, {
+                              code: item.category_id,
+                              path: item.category_path,
+                              leaf: item.leaf_name,
+                              score: 1,
+                              status: 'direct',
+                              source: 'manual_search',
+                            });
+                            setCategorySearchPanel(null);
+                          }}>
+                          <strong>{item.category_id}</strong>
+                          <span>{item.category_path}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
           {stage === 'upload' && file && (
             <>
               <div className="section-head">
                 <div className="left">
-                  <span className="crumbs">STEP 04 · 마켓 업로드 · market_upload</span>
+                  <span className="crumbs">STEP 06 · 마켓 업로드 · market_upload</span>
                   <h2>마켓별 업로드</h2>
                 </div>
                 <div className="summary">
@@ -1972,7 +2343,7 @@ function App() {
             </>
           )}
 
-          {stage !== 'drop' && stage !== 'keyword' && stage !== 'upload' && stage !== 'result' && file && (
+          {stage !== 'drop' && stage !== 'keyword' && stage !== 'category-match' && stage !== 'upload' && stage !== 'result' && file && (
             <>
               <WorkflowActionPanel
                 mode={fileMode}
