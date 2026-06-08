@@ -162,6 +162,10 @@ _USAGE_HINTS = {
     "욕실",
     "화장실",
     "주방",
+    "구두",
+    "운동화",
+    "오프로드",
+    "안개등",
     "싱크대",
     "세면대",
     "배수구",
@@ -207,6 +211,8 @@ _FUNCTION_HINTS = {
     "교체",
     "수리",
     "보수",
+    "수선",
+    "셀프수선",
     "배수",
     "분사",
     "고정력",
@@ -223,6 +229,7 @@ _PROBLEM_HINTS = {
     "누수",
     "유입",
     "처짐",
+    "마모",
     "밀폐",
 }
 
@@ -234,13 +241,43 @@ _MATERIAL_HINTS = {
     "알루미늄",
     "고무",
     "플라스틱",
-    "실버",
-    "블랙",
-    "화이트",
+    "황동",
     "304",
     "ABS",
     "니켈",
     "아연합금",
+}
+
+_COLOR_WORDS = {
+    "블랙",
+    "검정",
+    "검은색",
+    "화이트",
+    "흰색",
+    "실버",
+    "은색",
+    "그레이",
+    "회색",
+    "레드",
+    "빨강",
+    "빨간색",
+    "블루",
+    "파랑",
+    "파란색",
+    "그린",
+    "녹색",
+    "옐로우",
+    "노랑",
+    "노란색",
+    "핑크",
+    "민트",
+    "퍼플",
+    "보라",
+    "보라색",
+    "브라운",
+    "갈색",
+    "투명",
+    "반투명",
 }
 
 _AUDIENCE_HINTS = {
@@ -254,6 +291,45 @@ _AUDIENCE_HINTS = {
     "DIY",
     "튜닝",
     "캠핑",
+}
+
+_SEARCH_EXTENSION_BUCKETS = {
+    "usage_context",
+    "function",
+    "problem_solution",
+    "material_spec",
+    "audience_scene",
+}
+
+_WEAK_STANDALONE_TERMS = {
+    "방지",
+    "보호",
+    "보강",
+    "차단",
+    "해결",
+    "완화",
+    "마모",
+    "누수",
+    "유입",
+    "처짐",
+    "설치",
+    "장착",
+    "체결",
+    "연결",
+    "고정",
+    "부착",
+    "수선",
+    "조절",
+}
+
+_ALLOWED_WEAK_COMPOUNDS = {
+    "누수방지",
+    "누유방지",
+    "마모방지",
+    "흔들림방지",
+    "유입방지",
+    "처짐방지",
+    "각도조절",
 }
 
 _IDENTITY_HINTS = {
@@ -285,12 +361,15 @@ _IDENTITY_HINTS = {
     "볼트",
     "너트",
     "나사",
+    "니플",
+    "유니온",
     "핀",
     "호스",
     "파이프",
     "케이블",
     "밴드",
     "테이프",
+    "밑창",
     "커버",
     "마개",
     "캡",
@@ -298,6 +377,104 @@ _IDENTITY_HINTS = {
     "레일",
     "롤러",
 }
+
+_REPEATED_HEAD_TERMS = (
+    "브라켓",
+    "브래킷",
+    "마운트",
+    "거치대",
+    "홀더",
+    "클립보드",
+    "클립",
+    "스티커",
+    "테이프",
+    "패드",
+    "커넥터",
+    "조인트",
+    "캐치",
+    "래치",
+    "가스켓",
+    "가스킷",
+    "후크",
+    "고리",
+    "바퀴",
+    "휠",
+    "조절다리",
+    "다리",
+)
+
+_READABLE_SPACING_TERMS = (
+    "스테인리스",
+    "서류클립보드",
+    "클립보드",
+    "미끄럼방지",
+    "누수방지",
+    "각도조절",
+    "보조등",
+    "무타공",
+    "차량",
+    "자동차",
+    "조명",
+    "스틸",
+    "브라켓",
+    "브래킷",
+    "마운트",
+    "거치대",
+    "홀더",
+    "스티커",
+    "테이프",
+    "패드",
+    "커넥터",
+    "조인트",
+    "가스켓",
+    "후크",
+    "바퀴",
+    "캐리어",
+    "더블휠",
+    "우레탄",
+    "교체",
+    "교체용",
+    "서류",
+    "문서",
+    "사무",
+    "업무",
+    "현장",
+    "세로형",
+    "가로형",
+    "와이드형",
+    "야광",
+    "데칼",
+    "에폭시",
+    "블랙",
+    "검정",
+    "검은색",
+    "화이트",
+    "흰색",
+    "실버",
+    "은색",
+    "그레이",
+    "회색",
+    "레드",
+    "빨강",
+    "빨간색",
+    "블루",
+    "파랑",
+    "파란색",
+    "그린",
+    "녹색",
+    "옐로우",
+    "노랑",
+    "노란색",
+    "핑크",
+    "민트",
+    "퍼플",
+    "보라",
+    "보라색",
+    "브라운",
+    "갈색",
+    "투명",
+    "반투명",
+)
 
 _PRICE_NUMERIC_RE = re.compile(r"\d{2,}(원|₩|만원|천원)")
 _BROKEN_NUMERIC_RE = re.compile(r"^(?:[0-9OI]{3,}|[A-Z]?[0-9OI]{2,}[A-Z]?)$", re.IGNORECASE)
@@ -329,6 +506,7 @@ def generate_market_keyword_packages(
     if not baseline_set:
         baseline_set = set(core.build_baseline_tokens_from_name(product_name))
     _expand_topic_refs_from_product_name(anchor_set, baseline_set, product_name)
+    allow_ocr_identity = _is_generic_product_name(product_name, anchor_set, baseline_set)
     avoid_keys = _build_avoid_semantic_keys(avoid_terms)
     product_name_keys = _build_product_name_semantic_keys(product_name)
     llm_bucketed = _generate_bucket_candidates_llm(
@@ -355,6 +533,7 @@ def generate_market_keyword_packages(
         baseline=baseline_set,
         market=market,
         avoid_keys=avoid_keys,
+        allow_ocr_identity=allow_ocr_identity,
     )
 
     candidate_pool = _flatten_bucket_map(bucketed)
@@ -368,6 +547,7 @@ def generate_market_keyword_packages(
         market=market,
         avoid_keys=avoid_keys,
         product_name_keys=product_name_keys,
+        allow_ocr_identity=allow_ocr_identity,
     )
     naver_tags = _build_naver_tags(
         bucketed=bucketed,
@@ -379,6 +559,7 @@ def generate_market_keyword_packages(
         market=market,
         avoid_keys=avoid_keys,
         product_name_keys=product_name_keys,
+        allow_ocr_identity=allow_ocr_identity,
     )
 
     search_source = coupang_tags or [_normalize_phrase(x) for x in candidate_pool]
@@ -525,6 +706,37 @@ def _build_product_name_semantic_keys(product_name: str) -> set[str]:
     return keys
 
 
+def _is_generic_product_name(product_name: str, anchors: set[str], baseline: set[str]) -> bool:
+    compact = _compact_phrase(product_name)
+    if not compact:
+        return True
+    generic_terms = {
+        "상품",
+        "이미지",
+        "ocr",
+        "사진",
+        "부품",
+        "세트",
+        "용품",
+        "수선용품",
+        "상품이미지",
+        "상품이미지ocr",
+    }
+    tokens = {_semantic_key(tok) for tok in _TOKEN_RE.findall(_normalize_phrase(product_name))}
+    tokens = {tok for tok in tokens if tok}
+    has_identity = any(hint in compact for hint in _IDENTITY_HINTS)
+    meaningful_refs = {
+        _semantic_key(ref)
+        for ref in set(anchors or set()) | set(baseline or set())
+        if _semantic_key(ref) and _semantic_key(ref) not in generic_terms
+    }
+    if has_identity:
+        return False
+    if tokens and tokens <= generic_terms:
+        return True
+    return len(meaningful_refs) <= 1 and any(term in compact.lower() for term in ("ocr", "이미지", "사진"))
+
+
 def _matches_avoid_semantics(key: str, avoid_keys: set[str] | None) -> bool:
     if not key or not avoid_keys:
         return False
@@ -601,9 +813,177 @@ def _drop_contained_weaker_key(key: str, seen: set[str], out: list[str]) -> bool
     return True
 
 
+def _split_repeated_head_phrase(text: str, seen_heads: set[str]) -> tuple[str, str]:
+    """반복되는 제품 헤드(브라켓/스티커 등)를 뒤 후보에서는 제거한다.
+
+    예: 차량조명브라켓, 무타공브라켓, 보조등브라켓
+    -> 차량조명브라켓, 무타공, 보조등
+    """
+    phrase = _normalize_phrase(text)
+    compact = _compact_phrase(phrase)
+    if not compact:
+        return "", ""
+
+    for head in sorted(_REPEATED_HEAD_TERMS, key=len, reverse=True):
+        head_key = _semantic_key(head)
+        if not head_key:
+            continue
+        compact_key = _semantic_key(compact)
+        if not compact_key.endswith(head_key):
+            continue
+
+        prefix = compact[: max(0, len(compact) - len(head))]
+        if not prefix:
+            return phrase, head_key
+        if head_key in seen_heads:
+            prefix_phrase = _normalize_phrase(prefix)
+            if prefix_phrase and not _is_bad_phrase(prefix_phrase):
+                return prefix_phrase, head_key
+        return phrase, head_key
+
+    return phrase, ""
+
+
+def _format_readable_keyword_phrase(text: str) -> str:
+    phrase = _normalize_phrase(text)
+    if not phrase or " " in phrase:
+        return phrase
+    compact = _compact_phrase(phrase)
+    if not re.search(r"[가-힣]", compact):
+        return phrase
+
+    terms = sorted(set(_READABLE_SPACING_TERMS), key=len, reverse=True)
+    out: list[str] = []
+    i = 0
+    covered = 0
+    while i < len(compact):
+        match = ""
+        for term in terms:
+            if compact.startswith(term, i):
+                match = term
+                break
+        if match:
+            out.append(match)
+            covered += len(match)
+            i += len(match)
+            continue
+        j = i + 1
+        while j < len(compact) and not any(compact.startswith(term, j) for term in terms):
+            j += 1
+        out.append(compact[i:j])
+        i = j
+
+    if len(out) >= 2 and covered >= max(2, int(len(compact) * 0.5)):
+        return _normalize_phrase(" ".join(out))
+    return phrase
+
+
+def _phrase_has_repeated_head_candidate(text: str) -> bool:
+    compact = _compact_phrase(text)
+    key = _semantic_key(compact)
+    if not key:
+        return False
+    for head in _REPEATED_HEAD_TERMS:
+        head_key = _semantic_key(head)
+        if head_key and key != head_key and key.endswith(head_key):
+            return True
+    return False
+
+
+def _expand_compound_modifier_phrase(text: str) -> list[str]:
+    phrase = _normalize_phrase(text)
+    parts = [part for part in phrase.split() if part]
+    if len(parts) <= 1:
+        return [phrase] if phrase else []
+    if any(_phrase_has_repeated_head_candidate(part) for part in parts):
+        return parts
+    return [phrase]
+
+
+def _readable_parts(text: str) -> list[str]:
+    phrase = _format_readable_keyword_phrase(text)
+    parts: list[str] = []
+    for part in phrase.split():
+        formatted = _format_readable_keyword_phrase(part)
+        parts.extend([p for p in formatted.split() if p])
+    return parts
+
+
+def _trim_seen_readable_parts(text: str, seen_parts: set[str]) -> str:
+    parts = _readable_parts(text)
+    if len(parts) <= 1:
+        return _format_readable_keyword_phrase(text)
+
+    kept = []
+    for part in parts:
+        key = _semantic_key(part)
+        if _compact_phrase(part) in _COLOR_WORDS:
+            continue
+        if key and key in seen_parts:
+            continue
+        kept.append(part)
+
+    if not kept:
+        return ""
+    return _normalize_phrase(" ".join(kept))
+
+
+def _dedupe_head_repetition(items: Iterable[str], max_items: int) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    seen_heads: set[str] = set()
+    seen_parts: set[str] = set()
+
+    for raw in items:
+        raw_phrase = _strip_size_option_tokens(raw)
+        if not raw_phrase:
+            continue
+
+        for phrase in _expand_compound_modifier_phrase(raw_phrase):
+            if not phrase or _is_bad_phrase(phrase):
+                continue
+
+            phrase, head_key = _split_repeated_head_phrase(phrase, seen_heads)
+            if not phrase or _is_bad_phrase(phrase):
+                continue
+
+            readable = _trim_seen_readable_parts(phrase, seen_parts)
+            if not readable or _is_bad_phrase(readable):
+                continue
+            key = _semantic_key(readable)
+            if not key or key in seen:
+                continue
+            if not _drop_contained_weaker_key(key, seen, out):
+                continue
+
+            seen.add(key)
+            if head_key:
+                seen_heads.add(head_key)
+            for part in _readable_parts(readable):
+                part_key = _semantic_key(part)
+                if part_key:
+                    seen_parts.add(part_key)
+            out.append(readable)
+            if len(out) >= max_items:
+                break
+        if len(out) >= max_items:
+            break
+
+    return out
+
+
 def _is_bad_phrase(text: str) -> bool:
     compact = _compact_phrase(text)
     if not compact or len(compact) < 2 or len(compact) > 20:
+        return True
+    if compact in _COLOR_WORDS:
+        return True
+    if compact in _WEAK_STANDALONE_TERMS:
+        return True
+    parts = _TOKEN_RE.findall(_normalize_phrase(text))
+    if len(parts) == 2 and all(part in _WEAK_STANDALONE_TERMS for part in parts) and compact not in _ALLOWED_WEAK_COMPOUNDS:
+        return True
+    if len(parts) == 2 and compact.endswith("각도") and compact != "각도조절":
         return True
     if _has_disallowed_latin(compact):
         return True
@@ -636,6 +1016,43 @@ def _passes_topic(text: str, anchors: set[str], baseline: set[str]) -> bool:
     if baseline:
         return core.is_consistent_with_baseline(compact, baseline)
     return True
+
+
+def _is_search_extension_phrase(text: str, bucket: str, allow_identity: bool = False) -> bool:
+    compact = _compact_phrase(text)
+    if not compact:
+        return False
+    hints = _USAGE_HINTS | _FUNCTION_HINTS | _PROBLEM_HINTS | _MATERIAL_HINTS | _AUDIENCE_HINTS
+    if bucket == "identity":
+        if not allow_identity:
+            return False
+        has_identity = any(hint in compact for hint in _IDENTITY_HINTS)
+        if has_identity and (len(_TOKEN_RE.findall(_normalize_phrase(text))) >= 2 or len(compact) >= 4):
+            return True
+        return len(_TOKEN_RE.findall(_normalize_phrase(text))) >= 2 and any(hint in compact for hint in hints)
+    if bucket not in _SEARCH_EXTENSION_BUCKETS:
+        return False
+    return any(hint in compact for hint in hints)
+
+
+def _allows_function_extension(anchors: set[str], baseline: set[str]) -> bool:
+    refs = "".join(_semantic_key(ref) for ref in set(anchors or set()) | set(baseline or set()))
+    if not refs:
+        return False
+    extension_heads = (
+        "브라켓",
+        "마운트",
+        "거치대",
+        "홀더",
+        "조명",
+        "패드",
+        "테이프",
+        "니플",
+        "유니온",
+        "커넥터",
+        "가스켓",
+    )
+    return any(head in refs for head in extension_heads)
 
 
 def _generate_bucket_candidates_llm(
@@ -745,7 +1162,7 @@ def _generate_bucket_candidates_fallback(
     out = _empty_bucket_map()
     phrases: list[str] = []
     phrases.extend(_collect_adjacent_phrases(product_name, max_tokens=16, max_size=2))
-    phrases.extend(_collect_adjacent_phrases(source_text, max_tokens=40, max_size=1))
+    phrases.extend(_collect_adjacent_phrases(source_text, max_tokens=40, max_size=2))
     phrases.extend(_extract_naver_candidates(naver_keyword_table))
 
     for phrase in phrases:
@@ -803,6 +1220,7 @@ def _normalize_bucket_map(
     baseline: set[str],
     market: str = "A",
     avoid_keys: set[str] | None = None,
+    allow_ocr_identity: bool = False,
 ) -> dict[str, list[str]]:
     out = _empty_bucket_map()
     seen: set[str] = set()
@@ -814,12 +1232,24 @@ def _normalize_bucket_map(
                 continue
             if _is_bad_phrase(phrase):
                 continue
-            if not _passes_topic(phrase, anchors=anchors, baseline=baseline):
-                continue
+            if allow_ocr_identity and bucket == "identity":
+                parts = [part for part in _normalize_phrase(phrase).split() if part]
+                repeated_parts = [part for part in parts if _phrase_has_repeated_head_candidate(part)]
+                if len(repeated_parts) >= 2:
+                    continue
             key = _semantic_key(phrase)
             if not key or key in seen:
                 continue
             if market == "B" and bucket != "identity" and _matches_avoid_semantics(key, avoid_keys):
+                continue
+            if market == "B" and bucket == "identity" and _matches_avoid_semantics(key, avoid_keys) and any(hint in key for hint in _MATERIAL_HINTS):
+                continue
+            allow_extension = (
+                allow_ocr_identity
+                or bucket in {"usage_context", "problem_solution", "material_spec", "audience_scene"}
+                or (bucket == "function" and _allows_function_extension(anchors, baseline))
+            )
+            if not _passes_topic(phrase, anchors=anchors, baseline=baseline) and not (allow_extension and _is_search_extension_phrase(phrase, bucket, allow_identity=allow_ocr_identity)):
                 continue
             seen.add(key)
             out[bucket].append(phrase)
@@ -836,22 +1266,7 @@ def _flatten_bucket_map(bucketed: dict[str, list[str]]) -> list[str]:
 
 
 def _dedupe_market_items(items: Iterable[str], max_items: int) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for raw in items:
-        phrase = _strip_size_option_tokens(raw)
-        if not phrase or _is_bad_phrase(phrase):
-            continue
-        key = _semantic_key(phrase)
-        if not key or key in seen:
-            continue
-        if not _drop_contained_weaker_key(key, seen, out):
-            continue
-        seen.add(key)
-        out.append(phrase)
-        if len(out) >= max_items:
-            break
-    return out
+    return _dedupe_head_repetition(items, max_items=max_items)
 
 
 def _pick_market_items(
@@ -895,39 +1310,51 @@ def _build_market_keyword_variants(
         max_items=20,
         fallback=candidate_pool,
     )
+    cafe24_keyword_items = _pick_market_items(
+        bucketed,
+        ("function", "identity", "usage_context", "material_spec", "problem_solution", "audience_scene", "synonyms"),
+        max_items=18,
+        fallback=cafe24_items,
+    )
     smartstore_items = _dedupe_market_items(naver_tags or cafe24_items, max_items=10)
-    coupang_items = _dedupe_market_items(coupang_tags or cafe24_items, max_items=20)
+    coupang_items = _dedupe_market_items([*(coupang_tags or []), *candidate_pool, *cafe24_items], max_items=24)
+    coupang_keyword_items = _pick_market_items(
+        bucketed,
+        ("usage_context", "problem_solution", "function", "material_spec", "identity", "audience_scene", "synonyms"),
+        max_items=22,
+        fallback=coupang_items,
+    )
     esm_items = _pick_market_items(
         bucketed,
-        ("identity", "function", "synonyms", "usage_context"),
-        max_items=10,
+        ("function", "identity", "material_spec", "usage_context", "problem_solution", "synonyms"),
+        max_items=14,
         fallback=cafe24_items,
     )
     eleven_items = _pick_market_items(
         bucketed,
-        ("identity", "usage_context", "function", "synonyms", "problem_solution"),
-        max_items=12,
+        ("usage_context", "problem_solution", "identity", "function", "audience_scene", "material_spec", "synonyms"),
+        max_items=16,
         fallback=cafe24_items,
     )
     lotte_items = _pick_market_items(
         bucketed,
-        ("identity", "function", "usage_context", "material_spec", "synonyms"),
-        max_items=14,
+        ("problem_solution", "material_spec", "identity", "usage_context", "function", "audience_scene", "synonyms"),
+        max_items=18,
         fallback=cafe24_items,
     )
     common_items = _dedupe_market_items(candidate_pool or cafe24_items, max_items=18)
 
     values = {
-        "홈런_Cafe24검색어설정": _format_keyword_line(cafe24_items[:20], separator=",", compact=True),
-        "홈런_Cafe24검색키워드": _format_keyword_line(cafe24_items[:18], separator=" ", compact=False),
+        "홈런_Cafe24검색어설정": _format_keyword_line(cafe24_items[:20], separator=" ", compact=False),
+        "홈런_Cafe24검색키워드": _format_keyword_line(cafe24_keyword_items[:18], separator=" ", compact=False),
         "홈런_스마트스토어태그": _format_keyword_line(smartstore_items[:10], separator="|", compact=False),
         "홈런_스마트스토어검색키워드": _format_keyword_line(smartstore_items[:10], separator=" ", compact=False),
-        "홈런_쿠팡검색태그": _format_keyword_line(coupang_items[:20], separator=",", compact=False),
-        "홈런_쿠팡검색키워드": _format_keyword_line(coupang_items[:18], separator=" ", compact=False),
-        "홈런_ESM검색키워드": _format_keyword_line(esm_items[:10], separator=",", compact=True),
-        "홈런_11번가검색키워드": _format_keyword_line(eleven_items[:12], separator=",", compact=True),
-        "홈런_롯데ON검색키워드": _format_keyword_line(lotte_items[:14], separator=" ", compact=False),
-        "홈런_공통마켓검색키워드": _format_keyword_line(common_items[:18], separator=",", compact=True),
+        "홈런_쿠팡검색태그": _format_keyword_line(coupang_items[:24], separator=" ", compact=False),
+        "홈런_쿠팡검색키워드": _format_keyword_line(coupang_keyword_items[:22], separator=" ", compact=False),
+        "홈런_ESM검색키워드": _format_keyword_line(esm_items[:14], separator=" ", compact=False),
+        "홈런_11번가검색키워드": _format_keyword_line(eleven_items[:16], separator=" ", compact=False),
+        "홈런_롯데ON검색키워드": _format_keyword_line(lotte_items[:18], separator=" ", compact=False),
+        "홈런_공통마켓검색키워드": _format_keyword_line(common_items[:18], separator=" ", compact=False),
     }
     return {column: values.get(column, "") for column in MARKET_KEYWORD_COLUMNS_10}
 
@@ -942,6 +1369,7 @@ def _build_coupang_tags(
     market: str = "A",
     avoid_keys: set[str] | None = None,
     product_name_keys: set[str] | None = None,
+    allow_ocr_identity: bool = False,
 ) -> list[str]:
     if market == "B":
         # B마켓: 총 14개, 버킷순서 변경 (identity→function→usage→material→problem→audience→synonyms)
@@ -976,11 +1404,16 @@ def _build_coupang_tags(
             deferred_seen.add(key)
             deferred.append(value)
 
-    def push(value: str, *, allow_product_name_overlap: bool = False) -> bool:
+    def push(value: str, *, allow_product_name_overlap: bool = False, bucket: str = "") -> bool:
         phrase = _strip_size_option_tokens(value)
         if _is_bad_phrase(phrase):
             return False
-        if not _passes_topic(phrase, anchors=anchors, baseline=baseline):
+        allow_extension = (
+            allow_ocr_identity
+            or bucket in {"usage_context", "problem_solution", "material_spec", "audience_scene"}
+            or (bucket == "function" and _allows_function_extension(anchors, baseline))
+        )
+        if not _passes_topic(phrase, anchors=anchors, baseline=baseline) and not (allow_extension and _is_search_extension_phrase(phrase, bucket, allow_identity=allow_ocr_identity)):
             return False
         key = _semantic_key(phrase)
         if not key or key in seen:
@@ -999,24 +1432,24 @@ def _build_coupang_tags(
         for value in bucketed.get(bucket, []):
             if market == "B" and bucket != "identity" and _matches_avoid_semantics(_semantic_key(value), avoid_keys):
                 continue
-            if push(value):
+            if push(value, bucket=bucket):
                 added += 1
             if added >= quota or len(out) >= max_tags:
                 break
         if len(out) >= max_tags:
-            return out[:max_tags]
+            return _dedupe_head_repetition(out, max_items=max_tags)
 
     for value in candidate_pool:
         if market == "B" and _matches_avoid_semantics(_semantic_key(value), avoid_keys):
             continue
         push(value)
         if len(out) >= max_tags:
-            return out[:max_tags]
+            return _dedupe_head_repetition(out, max_items=max_tags)
 
     for value in deferred:
         push(value, allow_product_name_overlap=True)
         if len(out) >= max_tags:
-            return out[:max_tags]
+            return _dedupe_head_repetition(out, max_items=max_tags)
 
     for value in _collect_adjacent_phrases(product_name, max_tokens=16, max_size=2):
         if market == "B" and _matches_avoid_semantics(_semantic_key(value), avoid_keys):
@@ -1024,7 +1457,7 @@ def _build_coupang_tags(
         push(value, allow_product_name_overlap=True)
         if len(out) >= max_tags:
             break
-    return out[:max_tags]
+    return _dedupe_head_repetition(out, max_items=max_tags)
 
 
 def _build_naver_tags(
@@ -1037,6 +1470,7 @@ def _build_naver_tags(
     market: str = "A",
     avoid_keys: set[str] | None = None,
     product_name_keys: set[str] | None = None,
+    allow_ocr_identity: bool = False,
 ) -> list[str]:
     if market == "B":
         # B마켓: 총 7개
@@ -1070,11 +1504,15 @@ def _build_naver_tags(
             deferred_seen.add(key)
             deferred.append(value)
 
-    def push(value: str, *, allow_product_name_overlap: bool = False) -> bool:
+    def push(value: str, *, allow_product_name_overlap: bool = False, bucket: str = "") -> bool:
         phrase = _strip_size_option_tokens(value)
         if _is_bad_naver_tag(phrase):
             return False
-        if not _passes_topic(phrase, anchors=anchors, baseline=baseline):
+        allow_extension = (
+            allow_ocr_identity
+            or bucket in {"usage_context", "problem_solution", "material_spec", "audience_scene"}
+        )
+        if not _passes_topic(phrase, anchors=anchors, baseline=baseline) and not (allow_extension and _is_search_extension_phrase(phrase, bucket, allow_identity=allow_ocr_identity)):
             return False
         key = _semantic_key(phrase)
         if not key or key in seen:
@@ -1101,24 +1539,24 @@ def _build_naver_tags(
         for value in bucketed.get(bucket, []):
             if market == "B" and bucket != "identity" and _matches_avoid_semantics(_semantic_key(value), avoid_keys):
                 continue
-            if push(value):
+            if push(value, bucket=bucket):
                 added += 1
             if added >= quota or len(out) >= max_tags:
                 break
         if len(out) >= max_tags:
-            return out[:max_tags]
+            return _dedupe_head_repetition(out, max_items=max_tags)
 
     for value in candidate_pool:
         if market == "B" and _matches_avoid_semantics(_semantic_key(value), avoid_keys):
             continue
         push(value)
         if len(out) >= max_tags:
-            return out[:max_tags]
+            return _dedupe_head_repetition(out, max_items=max_tags)
 
     for value in deferred:
         push(value, allow_product_name_overlap=True)
         if len(out) >= max_tags:
-            return out[:max_tags]
+            return _dedupe_head_repetition(out, max_items=max_tags)
 
     for value in _collect_adjacent_phrases(product_name, max_tokens=16, max_size=2):
         if market == "B" and _matches_avoid_semantics(_semantic_key(value), avoid_keys):
@@ -1126,7 +1564,7 @@ def _build_naver_tags(
         push(value, allow_product_name_overlap=True)
         if len(out) >= max_tags:
             break
-    return out[:max_tags]
+    return _dedupe_head_repetition(out, max_items=max_tags)
 
 
 def _extract_naver_candidates(naver_keyword_table: str) -> list[str]:

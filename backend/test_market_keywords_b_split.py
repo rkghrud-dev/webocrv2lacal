@@ -2,6 +2,7 @@ from app.services import legacy_core as core
 from app.services.market_keywords import (
     MARKET_KEYWORD_COLUMNS_10,
     _build_avoid_semantic_keys,
+    _dedupe_market_items,
     _normalize_bucket_map,
     generate_market_keyword_packages,
 )
@@ -160,3 +161,83 @@ def test_generate_market_keyword_packages_builds_ten_market_keyword_sets_without
     assert "EVA" in joined, joined
     assert "1M" not in joined.upper(), joined
     assert "2mm" not in joined.lower(), joined
+
+
+def test_generate_market_keyword_packages_drops_color_option_keywords() -> None:
+    pkg = generate_market_keyword_packages(
+        product_name="손목 폰 가방 휴대폰 파우치 퍼플 그레이",
+        source_text="손목 폰 가방 휴대폰 파우치 손목 스트랩 미니 가방 외출용 퍼플 그레이 블랙",
+        model_name="없음",
+        anchors=set(),
+        baseline=set(),
+        market="A",
+    )
+
+    joined = " ".join(pkg.coupang_tags + pkg.naver_tags + list(pkg.market_keywords.values()))
+    for blocked in ("퍼플", "그레이", "블랙"):
+        assert blocked not in joined, joined
+
+
+def test_other_market_keyword_sets_are_space_separated_and_richer() -> None:
+    pkg = generate_market_keyword_packages(
+        product_name="브레이크 니플 브레이크 라인 연결 너트 유니온 세트",
+        source_text="브레이크 니플 브레이크 라인 연결 너트 유니온 세트 배관 연결 황동 누유 방지 정밀 나사산 자동차 정비 오일 라인 연료 배관 부품",
+        model_name="없음",
+        anchors=set(),
+        baseline=set(),
+        market="A",
+    )
+
+    for col in ("홈런_ESM검색키워드", "홈런_11번가검색키워드", "홈런_롯데ON검색키워드"):
+        value = pkg.market_keywords[col]
+        assert value, pkg.market_keywords
+        assert "," not in value, value
+        assert len(value.split()) >= 5, value
+
+
+def test_dedupe_market_items_splits_repeated_compound_heads_and_keeps_spacing() -> None:
+    items = _dedupe_market_items(
+        [
+            "차량조명브라켓",
+            "무타공브라켓",
+            "조명마운트",
+            "보조등브라켓",
+            "스틸브라켓",
+        ],
+        max_items=10,
+    )
+
+    assert items == ["차량 조명 브라켓", "무타공", "마운트", "보조등", "스틸"], items
+
+
+def test_generate_market_keyword_packages_promotes_ocr_identity_when_product_name_is_generic() -> None:
+    pkg = generate_market_keyword_packages(
+        product_name="상품 이미지 OCR",
+        source_text="차량조명브라켓 무타공브라켓 조명마운트 보조등브라켓 스틸브라켓 볼트 고정 각도 조절",
+        model_name="없음",
+        anchors=set(),
+        baseline=set(),
+        market="A",
+    )
+
+    assert "차량 조명 브라켓" in pkg.search_keywords, pkg.search_keywords
+    assert "무타공" in pkg.search_keywords, pkg.search_keywords
+    assert "보조등" in pkg.search_keywords, pkg.search_keywords
+
+
+def test_generate_market_keyword_packages_removes_weak_standalone_noise() -> None:
+    pkg = generate_market_keyword_packages(
+        product_name="신발 밑창 테이프 EVA 보강 패드 미끄럼방지",
+        source_text="신발 밑창테이프 EVA 보강 패드 미끄럼방지 셀프수선 접착 테이프 구두 운동화 밑창 보호 마모 방지 DIY 수선",
+        model_name="없음",
+        anchors=set(),
+        baseline=set(),
+        market="A",
+    )
+
+    joined = " ".join(pkg.coupang_tags + pkg.naver_tags + list(pkg.market_keywords.values()))
+    assert "마모 방지" in joined, joined
+    assert "보호 마모" not in joined, joined
+    smartstore = pkg.market_keywords.get("홈런_스마트스토어태그", "")
+    for weak in ("보호", "방지", "수선", "조절"):
+        assert weak not in {part.strip() for part in smartstore.split("|")}, smartstore
