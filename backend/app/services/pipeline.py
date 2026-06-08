@@ -1471,7 +1471,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
     if df.shape[1] >= 5:
 
-        df.iloc[:, 4] = 23
+        df.iloc[:, 4] = "23"
 
 
 
