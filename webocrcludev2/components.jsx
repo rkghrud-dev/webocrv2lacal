@@ -3506,7 +3506,34 @@ function MarketUploadWorkbench({
       return next;
     });
   };
-  const pollUploadJob = (jobId) => {
+  const closeMissingUploadEntries = (entries = [], results = []) => {
+    const resultKeys = new Set((Array.isArray(results) ? results : [])
+      .map((item) => item?.queueKey || `${item?.channel || ''}:${item?.gs || ''}`)
+      .filter(Boolean));
+    const missing = (Array.isArray(entries) ? entries : []).filter(({ key }) => key && !resultKeys.has(key));
+    if (!missing.length) return;
+    setUploadStatus((prev) => {
+      const next = {...prev};
+      missing.forEach(({ key }) => {
+        if (next[key] === 'requested' || next[key] === 'running' || next[key] === 'active' || next[key] === 'queued') {
+          next[key] = 'failed';
+        }
+      });
+      return next;
+    });
+    onUploadHistoryChange?.(missing.map(({ row, channel, variant }) => ({
+      channelKey: channel.key,
+      account: channel.account,
+      market: channel.market,
+      gs: row.gs,
+      sourceName: row.name,
+      title: variant.title,
+      searchTerms: variant.searchTerms,
+      productId: '',
+      error: '서버 업로드 결과에 포함되지 않았습니다. 재시도 대상입니다.',
+    })), 'failed');
+  };
+  const pollUploadJob = (jobId, expectedEntries = []) => {
     window.setTimeout(async () => {
       try {
         const response = await fetch(`/api/jobs/${jobId}`);
@@ -3515,7 +3542,9 @@ function MarketUploadWorkbench({
         applyActiveUploadEntries(job.activeEntries || []);
         if (Array.isArray(job.results)) applyUploadJobResults(job.results);
         if (job.status === 'completed') {
-          applyUploadJobResults(job.result?.results || []);
+          const finalResults = job.result?.results || [];
+          applyUploadJobResults(finalResults);
+          closeMissingUploadEntries(expectedEntries, finalResults);
           setUploadBusy(false);
           setCurrentUploadJobId('');
           return;
@@ -3544,7 +3573,7 @@ function MarketUploadWorkbench({
           setCurrentUploadJobId('');
           return;
         }
-        pollUploadJob(jobId);
+        pollUploadJob(jobId, expectedEntries);
       } catch (error) {
         setUploadStatus((prev) => {
           const next = {...prev};
@@ -3603,7 +3632,7 @@ function MarketUploadWorkbench({
       if (!response.ok || !result?.ok) throw new Error(result?.error || `upload ${response.status}`);
       onRuntimeArtifact?.({ jobId: result.jobId });
       setCurrentUploadJobId(result.jobId);
-      pollUploadJob(result.jobId);
+      pollUploadJob(result.jobId, entries);
     } catch (error) {
       setUploadStatus((prev) => {
         const next = {...prev};

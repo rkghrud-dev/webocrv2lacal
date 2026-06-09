@@ -60,6 +60,9 @@ public sealed class LotteOnUploadService
     private static LotteOnUploadDefaults LoadUploadDefaults()
     {
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (ShouldUsePersistedDefaults())
+            LoadPersistedDefaults(values);
+
         var path = DesktopKeyStore.GetPath("lotteon_api.txt");
         if (File.Exists(path))
         {
@@ -72,7 +75,6 @@ public sealed class LotteOnUploadService
                 values[trimmed[..eqIdx].Trim()] = trimmed[(eqIdx + 1)..].Trim();
             }
         }
-        LoadPersistedDefaults(values);
 
         string Pick(string fallback, params string[] keys)
         {
@@ -98,6 +100,22 @@ public sealed class LotteOnUploadService
         !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WEBOCR_ORIGINAL_KEY_ROOT"))
             ? Environment.GetEnvironmentVariable("WEBOCR_ORIGINAL_KEY_ROOT")!
             : DesktopKeyStore.DirectoryPath;
+
+    private static bool ShouldUsePersistedDefaults()
+    {
+        try
+        {
+            var keyRoot = Path.GetFullPath(DesktopKeyStore.DirectoryPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var persistentRoot = Path.GetFullPath(PersistentKeyDirectory)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return string.Equals(keyRoot, persistentRoot, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return true;
+        }
+    }
 
     private static void LoadPersistedDefaults(Dictionary<string, string> values)
     {
@@ -125,6 +143,9 @@ public sealed class LotteOnUploadService
 
     private static void SaveUploadDefaultsSnapshot(LotteOnUploadDefaults defaults)
     {
+        if (!ShouldUsePersistedDefaults())
+            return;
+
         try
         {
             Directory.CreateDirectory(PersistentKeyDirectory);
