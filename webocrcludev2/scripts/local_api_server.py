@@ -89,11 +89,6 @@ except Exception:
     naver_shopping_items = None
     select_naver_category_anchor = None
 
-try:
-    from app.services.naver_keyword_discovery import discover_naver_keywords
-except Exception:
-    discover_naver_keywords = None
-
 
 def category_text(value: object) -> str:
     if value is None:
@@ -2649,6 +2644,16 @@ SYNONYM_SEEDS = {
     "장갑": ["작업장갑", "현장장갑", "보호장갑"],
 }
 
+KEYWORD_DUPLICATE_ROOTS = (
+    "앞머리", "뒷머리", "옆머리", "뿌리", "볼륨", "헤어", "그루프", "집게",
+    "케이블", "네트워크", "랜선", "포트", "마개", "보호", "캡", "커버",
+    "전선", "클립", "고정", "홀더", "배선", "정리",
+    "스텐", "스테인리스", "원형", "보관", "통", "뚜껑", "용기", "소품",
+    "테이프", "몰딩", "엣지", "가구", "테두리", "마감", "모서리", "보수",
+    "도어", "잠금", "장치", "서랍", "캐비닛", "문",
+    "라이터", "라이타", "솜", "지포", "코튼", "펠트", "교체", "리필",
+)
+
 
 def unique_terms(values: list[str]) -> list[str]:
     out: list[str] = []
@@ -2660,6 +2665,42 @@ def unique_terms(values: list[str]) -> list[str]:
         seen.add(text)
         out.append(text)
     return out
+
+
+def keyword_duplicate_axes(value: object) -> set[str]:
+    compact = re.sub(r"\s+", "", text_value(value)).lower()
+    axes: set[str] = set()
+    for root in KEYWORD_DUPLICATE_ROOTS:
+        key = root.lower()
+        if key and key in compact:
+            axes.add(key)
+    return axes
+
+
+def dedupe_compound_keyword_text(value: object, max_root_repeats: int = 1) -> str:
+    words = clean_product_title(value).split()
+    out: list[str] = []
+    seen_words: set[str] = set()
+    root_counts: dict[str, int] = {}
+    for word in words:
+        clean = clean_product_title(word)
+        if not clean:
+            continue
+        compact = re.sub(r"\s+", "", clean).lower()
+        axes = keyword_duplicate_axes(clean)
+        if compact in seen_words:
+            continue
+        if axes and all(root_counts.get(axis, 0) >= max_root_repeats for axis in axes):
+            continue
+        if len(axes) >= 2:
+            repeated = sum(1 for axis in axes if root_counts.get(axis, 0) >= max_root_repeats)
+            if repeated >= max(1, len(axes) - 1):
+                continue
+        out.append(clean)
+        seen_words.add(compact)
+        for axis in axes:
+            root_counts[axis] = root_counts.get(axis, 0) + 1
+    return clean_product_title(" ".join(out))
 
 
 def normalize_term(term: object) -> str:
@@ -3707,24 +3748,10 @@ def build_naver_shopping_analysis(product: dict, keys: dict[str, str]) -> dict[s
         "topPhrases": [],
         "topCategories": [],
         "anchor": None,
-        "keywordDiscovery": {},
     }
     if not query:
         analysis["reason"] = "query_empty"
         return analysis
-    if discover_naver_keywords is not None:
-        seed_terms: list[str] = [text_value(product.get("sourceName")), text_value(product.get("baseProductName"))]
-        pool = product.get("keywordCandidatePool") if isinstance(product.get("keywordCandidatePool"), dict) else {}
-        for values in pool.values():
-            seed_terms.extend(split_candidate_terms(values)[:8])
-        generated_seed = product.get("generatedKeywordSeed") if isinstance(product.get("generatedKeywordSeed"), dict) else {}
-        for key in ("productNames", "searchTerms", "longtails", "debugTerms"):
-            seed_terms.extend(split_candidate_terms(generated_seed.get(key))[:8])
-        seed_text = " ".join(term for term in seed_terms if term)
-        try:
-            analysis["keywordDiscovery"] = discover_naver_keywords(query, seed_text=seed_text, limit=500)
-        except Exception as exc:
-            analysis["keywordDiscovery"] = {"status": "error", "reason": text_value(exc)[:300], "query": query}
     if naver_shopping_items is None or select_naver_category_anchor is None:
         analysis["status"] = "unavailable"
         analysis["reason"] = "naver_shopping_module_unavailable"
@@ -3848,8 +3875,6 @@ def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = F
 - 전체 순서는 반드시 `사진 다운로드/이미지 OCR → OCR 속성 정리 → 어디에 쓰는 물건인지 명확한 1차 키워드(ocrPrimaryKeyword) 확정 → 그 키워드로 네이버 API 호출 → 카테고리 앵커/상위 표현 기반 마켓별 키워드 생성`이다.
 - 입력 상품의 `naverShoppingAnalysis`가 `status=ok`이면 네이버 쇼핑 API 상위 결과를 1순위 근거로 쓴다.
 - `naverShoppingAnalysis.anchor`의 네이버 카테고리를 상품 정체성 기준으로 삼고, `topTitles`, `topPhrases`, `topTerms`에서 상위 노출 표현을 뽑아 마켓별 상품명/검색어를 만든다.
-- `naverShoppingAnalysis.keywordDiscovery`가 있으면 검색광고 월검색량/연관키워드와 네이버 자동완성 키워드를 함께 본다. `searchAdKeywords.monthlyTotalQcCnt`, `expandedKeywords.score`, `autocompleteKeywords` 순으로 실제 검색 수요가 있는 단어를 우선한다.
-- 단, 검색량이 높아도 OCR/이미지/원본 상품 정체성과 맞지 않으면 버린다. 검색광고/자동완성 단어는 상품을 바꾸는 근거가 아니라, OCR로 확정한 상품의 표현을 시장 검색어에 맞추는 근거다.
 - 단, 상품 정체성과 핵심 속성의 최종 기준은 무조건 OCR/이미지/원본 상품 사실이다. 네이버 API는 카테고리 확인과 시장에서 많이 쓰는 표현을 보강하는 용도다.
 
 출력 JSON 스키마:
@@ -3883,7 +3908,7 @@ def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = F
 - OCR 단어를 그대로 나열하는 것은 실패다. 반드시 `OCR 단어 해석 → 상품 정체성 확정 → 구매자가 검색할 용도/사용처/문제상황 추론 → 마켓별 상품명 재작성` 순서로 만든다.
 - 추론은 창작이 아니라 해석이다. 예: `전선 PP 클립`은 `전기 배선 정리`, `케이블 고정`, `태양광 패널 배선 고정`으로 확장할 수 있고, `원형 도어 잠금`은 `서랍`, `캐비닛`, `RV`, `트레일러`, `캠핑카 문 잠금`으로 확장할 수 있다.
 - 상품명은 OCR 토큰 목록이 아니라 구매자가 이해하는 문장형 키워드 묶음이어야 한다. `전선PP클립 PP 16mm 고정 클립`처럼 후보어를 이어붙이지 말고 `전선 PP 클립 케이블 고정 배선 정리 홀더`처럼 해석한다.
-- 마켓별 상품명/검색어는 `OCR 기반 상품 추론 → baseProductName 확정 → 네이버 쇼핑 API 카테고리/상위 상품명 → 검색광고 월검색량/연관키워드 → 자동완성/확장 키워드 → 5개 마켓 카테고리 매칭` 순서로 재작업한다.
+- 마켓별 상품명/검색어는 `OCR 기반 상품 추론 → baseProductName 확정 → 네이버 쇼핑 API 카테고리/상위 상품명 → 5개 마켓 카테고리 매칭` 순서로 재작업한다.
 - 네이버 API 결과가 있으면 LLM의 추측보다 API 상위 결과의 반복 패턴을 참고하되, OCR/이미지 사실과 충돌하면 OCR/이미지 사실이 항상 우선이다.
 - 네이버 API 결과가 없을 때도 `baseProductName`과 OCR 사실에서 확인되는 기능/사용처/문제상황을 보수적으로 추론해 작성한다. sourceName 단독 추측은 피하되, OCR이 암시하는 명확한 용도는 상품명과 검색어에 반영한다.
 - 네이버 API 상위어는 그대로 나열하지 말고 OCR/이미지의 실제 사실어와 결합 가능한 조합을 우선 만든다. 예: OCR에 `흑백`, `체커보드`, `파티`, `식탁보`가 있고 API 상위어에 `식탁보`, `테이블보`, `방수`, `체크`, `행사용`, `집들이`, `생일`, `돌상`이 있으면 `체커보드 식탁보`, `흑백 체크 식탁보`, `파티 테이블보`, `행사용 식탁보`, `홈파티 테이블 커버`, `생일파티 식탁보`, `돌상 테이블보`처럼 만든다.
@@ -3894,8 +3919,7 @@ def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = F
 - 사이즈, 크기, 치수, 색상, 수량, 세트 구성, 소재, 호환 모델, 브랜드는 절대 추론하지 않는다. OCR/이미지/원본 옵션/원본명에서 확인된 값만 상품명과 검색어에 사용한다.
 - 네이버 API 상위 결과에 `4인용`, `원형`, `린넨`, `방수`, `대형`, `화이트` 같은 속성이 많아도 OCR/이미지/원본 옵션에 없으면 해당 속성은 제외한다.
 - 객관 속성의 출처 우선순위는 `OCR 필드/이미지 텍스트 > 원본 옵션명 > 원본 상품명`이다. 이 셋에 없으면 쓰지 않는다.
-- 최종 키워드 풀은 `OCR 직접 사실`, `네이버 상위 상품명 표현`, `검색광고/자동완성 수요어`, `합리적 추론 파생어` 4층으로 구성한다. 상품명은 1~3층 중심, 검색어는 4층까지 확장한다.
-- 검색광고 월검색량이 있는 단어는 우선순위를 올리되, 같은 의미 단어가 여러 개면 월검색량이 높은 대표형 1개만 상품명에 넣고 나머지는 검색어/태그에 둔다.
+- 최종 키워드 풀은 `OCR 직접 사실`, `네이버 상위 상품명 표현`, `합리적 추론 파생어` 3층으로 구성한다. 상품명은 1~2층 중심, 검색어는 3층까지 확장한다.
 - 상품명에도 최소 1개 이상의 `합리적 추론 파생어`를 넣는다. 단, 소재/규격/색상/수량/브랜드/호환 모델은 추론어로 넣지 않는다. 상품명에 넣어도 되는 추론어는 용도, 사용처, 문제해결, 구매상황, 현장명이다.
 - OCR에 없는 속성은 API에 많이 보여도 상품명 핵심으로 넣지 않는다. 예: 상품 사진/OCR에서 방수 근거가 없으면 `방수`는 검색어 후보에는 둘 수 있지만 상품명 핵심에는 넣지 않는다.
 - API에 많이 나오는 단어라도 OCR/이미지의 실제 상품과 맞지 않으면 버린다. 반대로 OCR에 명확한 단어가 있으면 API 빈도가 낮아도 상품명/검색어의 중심에 둔다.
@@ -3930,6 +3954,10 @@ def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = F
 - 같은 단어를 반복하지 않는다.
 - 상품명에서는 붙여쓴 합성어를 자연스럽게 띄어쓴다. 예: 카라비너릴고리 -> 카라비너 릴고리, 와이어릴고리 -> 와이어 릴고리, 쿠션깔창 -> 쿠션 깔창, 보강패드 -> 보강 패드, 충격완화 -> 충격 완화.
 - 띄어쓰기는 "쪼개서 많이 넣기"가 아니다. 같은 의미 축을 반복하지 말고 대표 표현 하나로 압축한다.
+- 합성어 중복은 반드시 분해해서 검사한다. 예: `헤어 볼륨 집게 앞머리 뿌리 볼륨 그루프 뿌리볼륨집게 앞머리볼륨`은 실패다. `볼륨`, `집게`, `앞머리`, `뿌리`가 합성어 안에서 반복되기 때문이다.
+- 같은 예시는 `앞머리 뿌리 볼륨 집게 헤어 그루프`처럼 각 의미 축을 1회만 남긴다. `뿌리볼륨집게`, `앞머리볼륨`, `헤어볼륨집게`처럼 이미 나온 축을 붙여쓴 말은 상품명에 다시 넣지 않는다.
+- 상품명을 저장하기 전 20번 다시 읽는다고 가정하고, 붙여쓴 합성어까지 쪼개서 중복 축이 2회 이상 보이면 반드시 다시 작성한다.
+- 상품명에서 한 의미 축은 1회만 허용한다. 허용 축 예: 품목, 형태, 기능, 사용처, 대상, 소재, 규격, 문제해결. 같은 축을 동의어/합성어로 반복해 길이를 채우지 않는다.
 - 의미 중복 제거 규칙: `코너 쿠션`, `모서리 보호대`, `가구 안전 패드`, `가구 보호대`, `안전 쿠션`처럼 모두 같은 보호 목적이면 상품명에는 `코너 쿠션 모서리 보호대 가구 안전 패드` 정도로 정리하고, 같은 축의 표현을 계속 붙이지 않는다.
 - 상품명에는 핵심 의미 축을 최대 4개만 둔다: `품목/형태`, `기능`, `사용처`, `소재/규격`. 같은 축에서 2개 이상 겹치면 네이버 상위 결과 빈도와 자연스러운 표현을 보고 1개만 고른다.
 - 검색어/태그에는 동의어를 보강하되, 동일 의미 단어를 3개 넘게 반복하지 않는다. 예: 상품명에 `모서리 보호대`를 썼으면 검색어에는 `코너보호대`, `안전패드` 정도만 보강하고 `가구보호대`, `안전쿠션`, `보호쿠션`을 모두 넣지 않는다.
@@ -4041,26 +4069,51 @@ def clean_keyword_terms(value: str) -> str:
         compact_search_keyword(strip_low_value_quantity_term(term))
         for term in split_search_keyword_chunks(value)
     ]
-    return ", ".join(unique_terms([term for term in terms if term]))
+    deduped: list[str] = []
+    seen_axes: dict[str, int] = {}
+    for term in unique_terms([term for term in terms if term]):
+        axes = keyword_duplicate_axes(term)
+        if axes and all(seen_axes.get(axis, 0) >= 1 for axis in axes):
+            continue
+        if len(axes) >= 2 and sum(1 for axis in axes if seen_axes.get(axis, 0) >= 1) >= len(axes) - 1:
+            continue
+        deduped.append(term)
+        for axis in axes:
+            seen_axes[axis] = seen_axes.get(axis, 0) + 1
+    return ", ".join(deduped)
 
 
 def seo_tag_terms(value: object, limit: int = 10) -> list[str]:
     source = value if isinstance(value, list) else split_candidate_terms(value)
-    return unique_terms([
+    raw_terms = unique_terms([
         compact_search_keyword(strip_low_value_quantity_term(term))
         for term in source
         if compact_search_keyword(strip_low_value_quantity_term(term))
-    ])[:limit]
+    ])
+    out: list[str] = []
+    seen_axes: dict[str, int] = {}
+    for term in raw_terms:
+        axes = keyword_duplicate_axes(term)
+        if axes and all(seen_axes.get(axis, 0) >= 1 for axis in axes):
+            continue
+        if len(axes) >= 2 and sum(1 for axis in axes if seen_axes.get(axis, 0) >= 1) >= len(axes) - 1:
+            continue
+        out.append(term)
+        for axis in axes:
+            seen_axes[axis] = seen_axes.get(axis, 0) + 1
+        if len(out) >= limit:
+            break
+    return out
 
 
 def normalize_market_title(title: object, search_terms: object, tags: object, channel: str) -> str:
-    cleaned = clean_product_title(strip_low_value_single_quantity(title))
+    cleaned = dedupe_compound_keyword_text(strip_low_value_single_quantity(title))
     max_len = NAVER_TITLE_TARGET_MAX if channel.endswith(":네이버") else MARKET_TITLE_TARGET_MAX
     if not cleaned:
         return ""
 
     def trim_to_limit(value: str) -> str:
-        value = clean_product_title(value)
+        value = dedupe_compound_keyword_text(value)
         if len(value) <= max_len:
             return value
         words = value.split()
@@ -4072,7 +4125,7 @@ def normalize_market_title(title: object, search_terms: object, tags: object, ch
             if len(candidate) > max_len:
                 break
             out.append(word)
-        return clean_product_title(" ".join(out)) or value[:max_len].strip()
+        return dedupe_compound_keyword_text(" ".join(out)) or value[:max_len].strip()
 
     cleaned = trim_to_limit(cleaned)
     if len(cleaned) >= MARKET_TITLE_TARGET_MIN:
@@ -4081,13 +4134,13 @@ def normalize_market_title(title: object, search_terms: object, tags: object, ch
     compact_title = re.sub(r"\s+", "", cleaned).lower()
     candidates = seo_tag_terms(tags, 20) + seo_tag_terms(search_terms, 30)
     for term in unique_terms(candidates):
-        display = clean_product_title(strip_low_value_single_quantity(term))
+        display = dedupe_compound_keyword_text(strip_low_value_single_quantity(term))
         if not display or len(display) < 2 or len(display) > 12:
             continue
         compact_display = re.sub(r"\s+", "", display).lower()
         if compact_display in compact_title:
             continue
-        candidate = clean_product_title(f"{cleaned} {display}")
+        candidate = dedupe_compound_keyword_text(f"{cleaned} {display}")
         if len(candidate) > max_len:
             continue
         cleaned = candidate
