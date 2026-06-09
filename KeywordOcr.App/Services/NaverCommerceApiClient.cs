@@ -138,8 +138,11 @@ public sealed class NaverCommerceApiClient : IDisposable
         if (!resp.IsSuccessStatusCode)
         {
             var msg = raw.Length > 1000 ? raw[..1000] : raw;
-            msg = msg.Replace("\"", "'");
-            return JsonDocument.Parse($$$"""{"_error":{{{(int)resp.StatusCode}}},"_msg":"{{{msg}}}"}""");
+            return JsonDocument.Parse(JsonSerializer.Serialize(new
+            {
+                _error = (int)resp.StatusCode,
+                _msg = msg,
+            }));
         }
 
         try
@@ -149,8 +152,11 @@ public sealed class NaverCommerceApiClient : IDisposable
         catch
         {
             if (raw.Length > 500) raw = raw[..500];
-            raw = raw.Replace("\"", "'");
-            return JsonDocument.Parse($$$"""{"_error":{{{(int)resp.StatusCode}}},"_msg":"{{{raw}}}"}""");
+            return JsonDocument.Parse(JsonSerializer.Serialize(new
+            {
+                _error = (int)resp.StatusCode,
+                _msg = raw,
+            }));
         }
     }
 

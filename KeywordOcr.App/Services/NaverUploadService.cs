@@ -386,6 +386,7 @@ public sealed class NaverUploadService
         var salePrice = ResolveSalePrice(row);
         var detailHtml = MarketImageUrlGuard.RemoveUnsafeImageTags(
             GetStr(row, "상품 상세설명").OrIfEmpty(GetStr(row, "상세설명")));
+        detailHtml = SanitizeDetailHtml(detailHtml);
         var sellerCode = ExtractGsCode(row)
             .OrIfEmpty(GetStr(row, "판매자내부상품번호"))
             .OrIfEmpty(GetStr(row, "자체 상품코드"));
@@ -400,6 +401,9 @@ public sealed class NaverUploadService
             noticeFields.GetValueOrDefault("importer"),
             noticeFields.GetValueOrDefault("manufacturer"),
             DetailReferenceText);
+        ClampNoticeStrings(productInfoProvidedNotice);
+        manufacturerName = ClampNoticeText(manufacturerName, 50);
+        importerName = ClampNoticeText(importerName, 50);
 
         // 검색 태그
         var rawTags = GetStr(row, "홈런_네이버태그")
@@ -470,7 +474,7 @@ public sealed class NaverUploadService
                 ["certificationTargetExcludeContent"] = new JsonObject
                 {
                     ["childCertifiedProductExclusionYn"] = true,
-                    ["kcCertifiedProductExclusionYn"] = "TRUE",
+                    ["kcCertifiedProductExclusionYn"] = true,
                     ["greenCertifiedProductExclusionYn"] = true,
                 },
                 ["minorPurchasable"] = true,
@@ -1260,6 +1264,12 @@ public sealed class NaverUploadService
             return options;
 
         var minPrice = options.Min(option => option.Price);
+        var maxPrice = options.Max(option => option.Price);
+        if (maxPrice > salePrice)
+        {
+            return new List<OptionItem>();
+        }
+
         if (minPrice > 0)
         {
             salePrice += minPrice;
@@ -1267,6 +1277,56 @@ public sealed class NaverUploadService
         }
 
         return options.Select(option => new OptionItem(option.Name, option.Price)).ToList();
+    }
+
+    private static void ClampNoticeStrings(JsonNode? node)
+    {
+        if (node is JsonObject obj)
+        {
+            foreach (var item in obj.ToList())
+            {
+                if (item.Value is JsonObject or JsonArray)
+                {
+                    ClampNoticeStrings(item.Value);
+                    continue;
+                }
+                if (item.Value is null)
+                    continue;
+                var text = item.Value.GetValue<object>()?.ToString() ?? "";
+                if (string.IsNullOrWhiteSpace(text))
+                    continue;
+                var max = item.Key.Equals("warrantyPolicy", StringComparison.OrdinalIgnoreCase)
+                    || item.Key.Equals("afterServiceDirector", StringComparison.OrdinalIgnoreCase)
+                    || item.Key.Equals("customerServicePhoneNumber", StringComparison.OrdinalIgnoreCase)
+                        ? 100
+                        : 50;
+                obj[item.Key] = ClampNoticeText(text, max);
+            }
+        }
+        else if (node is JsonArray arr)
+        {
+            foreach (var item in arr)
+                ClampNoticeStrings(item);
+        }
+    }
+
+    private static string ClampNoticeText(string value, int maxLength)
+    {
+        var cleaned = CleanNoticeText(value);
+        cleaned = Regex.Replace(cleaned, @"[\u0000-\u001F\u007F]+", " ").Trim();
+        cleaned = Regex.Replace(cleaned, @"[^\w가-힣\s./()+\-]", " ").Trim();
+        cleaned = Regex.Replace(cleaned, @"\s+", " ").Trim();
+        if (string.IsNullOrWhiteSpace(cleaned))
+            return DetailReferenceText;
+        return cleaned.Length <= maxLength ? cleaned : cleaned[..maxLength];
+    }
+
+    private static string SanitizeDetailHtml(string value)
+    {
+        var cleaned = value ?? "";
+        cleaned = Regex.Replace(cleaned, @"[\u0000-\u001F\u007F]+", " ");
+        cleaned = cleaned.Replace("\\", "/");
+        return cleaned.Trim();
     }
 
     private static bool TryResolveFallbackNaverCategory(string productName, out string categoryId, out string categoryName)
