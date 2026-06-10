@@ -1471,6 +1471,7 @@ def run_pipeline(cfg: PipelineConfig, status_cb=None, progress_cb=None) -> tuple
 
     if df.shape[1] >= 5:
 
+        df[df.columns[4]] = df[df.columns[4]].astype(object)
         df.iloc[:, 4] = "23"
 
 
