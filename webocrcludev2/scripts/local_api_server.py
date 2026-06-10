@@ -89,6 +89,12 @@ except Exception:
     naver_shopping_items = None
     select_naver_category_anchor = None
 
+try:
+    from app.services.env_loader import ensure_env_loaded, get_env as get_env_value
+except Exception:
+    ensure_env_loaded = None
+    get_env_value = None
+
 
 def category_text(value: object) -> str:
     if value is None:
@@ -1314,6 +1320,185 @@ def category_match_preview(products: list[dict[str, object]], limit: int = 3) ->
         "dbPath": str(CATEGORY_MATCHING_DB_PATH),
         "rows": rows,
         "targets": [{"key": key, "label": label} for key, label, _keys in CATEGORY_MATCH_TARGETS],
+    }
+
+
+def load_openai_key_for_category() -> str:
+    if ensure_env_loaded is not None and get_env_value is not None:
+        try:
+            ensure_env_loaded()
+            key = get_env_value("OPENAI_API_KEY")
+            if key:
+                return key
+        except Exception:
+            pass
+    return (os.environ.get("OPENAI_API_KEY") or "").strip()
+
+
+def call_openai_category_judge(prompt: str, model: str, api_key: str, timeout: int = 90) -> dict:
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": "너는 한국 오픈마켓 카테고리 매칭 검수자다. 상품 정체성과 가장 잘 맞는 leaf 카테고리를 후보 중에서 고른다. 반드시 JSON 객체만 출력한다.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+    content = data["choices"][0]["message"]["content"]
+    return json.loads(content)
+
+
+def build_category_judge_prompt(name: str, naver_path: str, pending: dict[str, list[dict[str, object]]]) -> str:
+    lines = [
+        "아래 상품을 각 마켓의 카테고리 후보 중 하나에 매칭해라.",
+        "",
+        f"상품명: {name}",
+        f"네이버 카테고리(확정): {naver_path}",
+        "",
+        "마켓별 후보:",
+    ]
+    market_labels = {key: label for key, label, _keys in CATEGORY_MATCH_TARGETS}
+    for market_key, cands in pending.items():
+        lines.append(f"[{market_key}] {market_labels.get(market_key, market_key)}")
+        for cand in cands:
+            lines.append(f"  {cand['rank']}) code={cand['code']} | {cand['path']} (score={cand['score']})")
+    lines += [
+        "",
+        "규칙:",
+        "- 상품 정체성(무엇에 쓰는 물건인지)과 네이버 카테고리를 기준으로 가장 구체적이고 맞는 후보를 고른다.",
+        "- 후보가 전부 어울리지 않으면 confidence를 0.3 이하로 낮춰라.",
+        "- 어린이/유아/키즈/브랜드관/해외직구/도서 계열은 피한다.",
+        "",
+        '출력 JSON 형식: {"마켓키": {"rank": 후보번호, "code": "선택한 code", "confidence": 0.0~1.0, "reason": "한 줄 근거"}}',
+        f"마켓키는 다음만 사용: {', '.join(pending.keys())}",
+    ]
+    return "\n".join(lines)
+
+
+def llm_judge_category_matches(products: list[dict[str, object]], *, model: str = "gpt-4.1-mini",
+                               apply: bool = True, force: bool = False, candidate_limit: int = 5,
+                               confidence_threshold: float = 0.7) -> dict[str, object]:
+    if get_category_match_candidates is None:
+        return {"ok": False, "error": "category DB helper unavailable", "rows": []}
+    api_key = load_openai_key_for_category()
+    if not api_key:
+        return {"ok": False, "error": "OPENAI_API_KEY가 없습니다 (.env 또는 Desktop/key/api_key.txt)", "rows": []}
+
+    rows: list[dict[str, object]] = []
+    for product in products:
+        if not isinstance(product, dict):
+            continue
+        gs = category_text(product.get("gs"))
+        name = category_text(
+            product.get("name") or product.get("baseProductName")
+            or product.get("sourceName") or product.get("originalName")
+        )
+        source = product_category_match_source(product)
+        source_code = category_text(source.get("code"))
+        if not source_code:
+            rows.append({"gs": gs, "name": name, "skipped": "naver_category_missing"})
+            continue
+
+        pending: dict[str, list[dict[str, object]]] = {}
+        for market_key, _label, _category_keys in CATEGORY_MATCH_TARGETS:
+            approved = (
+                get_approved_category_mapping(source_code, market_key)
+                if get_approved_category_mapping is not None else None
+            )
+            if approved and not force:
+                continue
+            candidates = get_category_match_candidates(source_code, market_key, limit=candidate_limit) or []
+            cands: list[dict[str, object]] = []
+            for index, item in enumerate(candidates, 1):
+                score = item.get("confidence_score", 0)
+                cands.append({
+                    "rank": index,
+                    "code": category_text(item.get("target_category_id")),
+                    "path": display_category_path(item.get("target_category_path")),
+                    "score": round(float(score or 0), 3),
+                    "status": category_candidate_status(score, category_text(item.get("review_status"))),
+                })
+            if not cands:
+                continue
+            if not force and cands[0].get("status") == "auto":
+                continue
+            pending[market_key] = cands
+
+        if not pending:
+            rows.append({"gs": gs, "name": name, "skipped": "no_ambiguous_markets"})
+            continue
+
+        prompt = build_category_judge_prompt(name, category_text(source.get("path")), pending)
+        try:
+            result = call_openai_category_judge(prompt, model, api_key)
+        except Exception as exc:
+            rows.append({"gs": gs, "name": name, "error": str(exc)[:300]})
+            continue
+
+        choices: dict[str, object] = {}
+        for market_key, cands in pending.items():
+            choice = result.get(market_key) if isinstance(result.get(market_key), dict) else {}
+            code = category_text(choice.get("code"))
+            try:
+                confidence = max(0.0, min(1.0, float(choice.get("confidence") or 0)))
+            except Exception:
+                confidence = 0.0
+            reason = category_text(choice.get("reason"))[:200]
+            matched = next((c for c in cands if c.get("code") == code), None)
+            if matched is None:
+                try:
+                    rank = int(choice.get("rank") or 0)
+                except Exception:
+                    rank = 0
+                if 1 <= rank <= len(cands):
+                    matched = cands[rank - 1]
+                    code = category_text(matched.get("code"))
+            applied = False
+            if (
+                matched is not None and apply and confidence >= confidence_threshold
+                and approve_category_mapping_rule is not None
+            ):
+                try:
+                    approve_category_mapping_rule(
+                        source_category_id=source_code,
+                        source_category_path=category_text(source.get("path")),
+                        target_market=market_key,
+                        target_category_id=code,
+                        target_category_path=category_text(matched.get("path")),
+                        approved_by="llm",
+                        notes=f"llm:{model} conf={confidence:.2f} {reason}",
+                    )
+                    applied = True
+                except Exception as exc:
+                    reason = f"{reason} (저장 실패: {str(exc)[:100]})"
+            choices[market_key] = {
+                "code": code,
+                "path": category_text(matched.get("path")) if matched else "",
+                "confidence": confidence,
+                "reason": reason,
+                "applied": applied,
+                "validCandidate": matched is not None,
+            }
+        rows.append({"gs": gs, "name": name, "naver": source, "choices": choices})
+
+    return {
+        "ok": True,
+        "model": model,
+        "apply": apply,
+        "confidenceThreshold": confidence_threshold,
+        "rows": rows,
     }
 
 
@@ -8432,6 +8617,18 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
                     notes=category_text(payload.get("notes")),
                 )
                 self.send_json({"ok": True, "rule": rule})
+                return
+            if path == "/api/category-match/llm-judge":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                products = payload.get("products") if isinstance(payload.get("products"), list) else []
+                self.send_json(llm_judge_category_matches(
+                    products,
+                    model=category_text(payload.get("model")) or "gpt-4.1-mini",
+                    apply=bool(payload.get("apply", True)),
+                    force=bool(payload.get("force")),
+                    candidate_limit=int(payload.get("limit") or 5),
+                    confidence_threshold=float(payload.get("confidenceThreshold") or 0.7),
+                ))
                 return
             if path == "/api/emergency-codex-context":
                 payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
