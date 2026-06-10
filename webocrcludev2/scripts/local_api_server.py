@@ -6995,6 +6995,24 @@ def run_market_upload_job(job_id: str, payload: dict) -> None:
                 active_entries[active_key] = {**entry, "status": "running", "updatedAt": now_text()}
             update_job_progress(f"{entry['channel']} 11번가 API 실행")
             try:
+                # 네이버/쿠팡과 동일하게 Cafe24 기준상품 이미지를 대표/추가로 사용
+                cafe24_path = resolve_cafe24_key_path_for_account(settings, entry.get("account", ""))
+                if cafe24_path is not None:
+                    try:
+                        images = get_cafe24_listing_images(
+                            cafe24_path, text_value(entry.get("gs")), text_value(entry.get("baseGs")),
+                        )
+                        if images:
+                            entry["_cafe24ListingImages"] = images
+                            log_lines.append(f"[{now_text()}] {entry['gs']} Cafe24 이미지 {len(images)}장 적용")
+                    except Exception as exc:
+                        log_lines.append(f"[{now_text()}] {entry['gs']} Cafe24 이미지 조회 실패: {str(exc)[:120]}")
+                if not entry.get("_cafe24ListingImages"):
+                    # 대표이미지에 상세컷이 들어가는 사고 방지: Cafe24 기준 이미지 없이는 등록하지 않음
+                    return {
+                        **entry, "status": "failed", "updatedAt": now_text(),
+                        "error": "Cafe24 기준상품 이미지를 가져오지 못했습니다 (토큰 만료 시 Cafe24 재인증 필요). 대표이미지 오등록 방지를 위해 중단.",
+                    }
                 result = upload_elevenst_product(entry)
             finally:
                 with upload_lock:
@@ -7947,6 +7965,104 @@ def elevenst_image_url(value: object) -> str:
     return url if path_part.endswith((".jpg", ".jpeg", ".png")) else ""
 
 
+def get_cafe24_listing_images(cafe24_path: Path, gs: str, base_gs: str = "") -> list[str]:
+    """Cafe24 기준상품(자체상품코드=GS)에서 대표/추가 이미지 URL을 가져온다.
+
+    네이버/쿠팡 업로드(Cafe24MarketDataService)와 동일한 소스: detail_image(대표) + additionalimages(추가).
+    """
+    cfg = read_secret_payload(cafe24_path)
+    mall_id = pick_secret(cfg, "MALL_ID", "mall_id", "mallId")
+    token = pick_secret(cfg, "ACCESS_TOKEN", "access_token", "accessToken")
+    api_version = pick_secret(cfg, "API_VERSION", "api_version", "apiVersion") or "2025-12-01"
+    shop_no = pick_secret(cfg, "SHOP_NO", "shop_no", "shopNo") or "1"
+    if not mall_id or not token:
+        return []
+
+    def call(url: str, bearer: str) -> tuple[bool, object, str]:
+        return request_text("GET", url, {
+            "Authorization": f"Bearer {bearer}",
+            "X-Cafe24-Api-Version": api_version,
+            "Accept": "application/json",
+        })
+
+    def call_with_refresh(url: str) -> str:
+        nonlocal token
+        ok, status, body = call(url, token)
+        if not ok and status == 401:
+            refreshed, new_token = refresh_cafe24_access_token(cafe24_path, cfg, mall_id)
+            if refreshed:
+                token = new_token
+                ok, status, body = call(url, token)
+        return body if ok else ""
+
+    product_no = None
+    for code in [c for c in (gs, base_gs) if c]:
+        query = urllib.parse.urlencode({
+            "shop_no": shop_no,
+            "custom_product_code": code,
+            "fields": "product_no,custom_product_code,detail_image,list_image",
+            "limit": 10,
+        })
+        body = call_with_refresh(f"https://{mall_id}.cafe24api.com/api/v2/admin/products?{query}")
+        if not body:
+            continue
+        try:
+            products = json.loads(body).get("products") or []
+        except Exception:
+            continue
+        match = next(
+            (p for p in products if text_value(p.get("custom_product_code")).upper() == code.upper()),
+            products[0] if products else None,
+        )
+        if match:
+            product_no = match.get("product_no")
+            break
+    if not product_no:
+        return []
+
+    body = call_with_refresh(
+        f"https://{mall_id}.cafe24api.com/api/v2/admin/products/{product_no}"
+        f"?shop_no={urllib.parse.quote(str(shop_no))}&embed=additionalimages"
+    )
+    if not body:
+        return []
+    try:
+        product = json.loads(body).get("product") or {}
+    except Exception:
+        return []
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: object) -> None:
+        url = elevenst_image_url(value)
+        if url and url.lower() not in seen:
+            seen.add(url.lower())
+            urls.append(url)
+
+    for field in ("detail_image", "list_image", "tiny_image"):
+        if text_value(product.get(field)):
+            add(product.get(field))
+            break
+    extra = product.get("additionalimages")
+    if isinstance(extra, list):
+        for item in extra:
+            if isinstance(item, dict):
+                add(item.get("big") or item.get("medium") or item.get("small"))
+            else:
+                add(item)
+    return urls
+
+
+def resolve_cafe24_key_path_for_account(settings: dict, account: str) -> Path | None:
+    item = settings.get(market_key_id(account, "Cafe24"))
+    if isinstance(item, dict):
+        try:
+            return resolve_market_key_item_path(item)
+        except Exception:
+            return None
+    return None
+
+
 def load_elevenst_api_key() -> str:
     env_key = (os.environ.get("ELEVENST_API_KEY") or "").strip()
     if env_key:
@@ -7968,13 +8084,19 @@ def build_elevenst_product_xml(entry: dict) -> str:
     category_code = resolve_elevenst_leaf_code(entry, category_value(entry, "elevenst", "11st", "eleven"))
     if not category_code:
         raise ValueError("11번가 카테고리 코드를 결정하지 못했습니다.")
-    main_image = elevenst_image_url(export_main_image_for_entry(entry))
+    # 이미지 우선순위: ① Cafe24 기준상품(대표=detail_image, 추가=additionalimages — 네이버/쿠팡과 동일 소스) ② 기존 export 폴백
+    cafe24_images = entry.get("_cafe24ListingImages") if isinstance(entry.get("_cafe24ListingImages"), list) else []
+    if cafe24_images:
+        main_image = cafe24_images[0]
+        add_images = cafe24_images[1:4]
+    else:
+        main_image = elevenst_image_url(export_main_image_for_entry(entry))
+        add_images = [
+            url for url in (elevenst_image_url(image) for image in export_additional_images_for_entry(entry))
+            if url
+        ][:3]
     if not main_image:
         raise ValueError("공개 대표이미지 URL(jpg/jpeg/png)이 없습니다.")
-    add_images = [
-        url for url in (elevenst_image_url(image) for image in export_additional_images_for_entry(entry))
-        if url
-    ][:3]
     detail_html = export_detail_html_for_entry(entry)
     labels = option_labels_for_export(entry)
     option_prices = option_prices_for_export(entry, len(labels))
