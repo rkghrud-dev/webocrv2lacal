@@ -8001,6 +8001,11 @@ def build_elevenst_product_xml(entry: dict) -> str:
         parts.append(f"<prdImage0{index}>{image}</prdImage0{index}>")
     parts += [
         f"<htmlDetail>{_xml_cdata(detail_html)}</htmlDetail>",
+        # 안전인증 비대상 선언 (어린이제품/생활용품, 전기용품, 방송통신기자재 = 03 비대상 / 생활화학제품 = 05 비대상)
+        "<ProductCertGroup><crtfGrpTypCd>01</crtfGrpTypCd><crtfGrpObjClfCd>03</crtfGrpObjClfCd></ProductCertGroup>",
+        "<ProductCertGroup><crtfGrpTypCd>02</crtfGrpTypCd><crtfGrpObjClfCd>03</crtfGrpObjClfCd></ProductCertGroup>",
+        "<ProductCertGroup><crtfGrpTypCd>03</crtfGrpTypCd><crtfGrpObjClfCd>03</crtfGrpObjClfCd></ProductCertGroup>",
+        "<ProductCertGroup><crtfGrpTypCd>04</crtfGrpTypCd><crtfGrpObjClfCd>05</crtfGrpObjClfCd></ProductCertGroup>",
         "<selTermUseYn>N</selTermUseYn>",
         f"<selPrc>{price}</selPrc>",
     ]
