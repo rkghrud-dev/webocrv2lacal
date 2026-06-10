@@ -7758,6 +7758,173 @@ def export_response_for_file(path: Path, count: int, file_format: str, **extra: 
     }
 
 
+ESM_CODE_MATCHING_CACHE: dict[str, object] | None = None
+
+
+def load_esm_code_matching() -> dict[str, object]:
+    """공식 ESM↔A옥션/G마켓 코드 매칭표(esm_code_matching.csv) 로드.
+
+    반환: {"byEsm": {esm_code: {"path", "auction": [..], "gmarket": [..]}},
+           "auctionToEsm": {auction_code: esm_code},
+           "gmarketToEsm": {gmarket_code: esm_code}}
+    """
+    global ESM_CODE_MATCHING_CACHE
+    if ESM_CODE_MATCHING_CACHE is not None:
+        return ESM_CODE_MATCHING_CACHE
+    by_esm: dict[str, dict[str, object]] = {}
+    auction_to_esm: dict[str, str] = {}
+    gmarket_to_esm: dict[str, str] = {}
+    path = CATEGORY_REFERENCE_ROOT / "esm_code_matching.csv"
+    if not path.is_file():
+        # 원본 공식 매칭 xls에서 1회 변환 생성 (pandas 가용 시)
+        xls_path = CATEGORY_REFERENCE_ROOT / "esm_full_category_codes.xls"
+        if xls_path.is_file():
+            try:
+                import pandas as pd
+                frame = pd.read_excel(xls_path, dtype=str).fillna("")
+                frame.columns = ["esm_path", "site_path", "site", "esm_code", "site_code"]
+                frame = frame[frame["esm_code"].str.strip() != ""]
+                frame.to_csv(path, index=False, encoding="utf-8-sig")
+            except Exception:
+                pass
+    if path.is_file():
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            for raw in csv.DictReader(handle):
+                esm_code = text_value(raw.get("esm_code"))
+                if not esm_code:
+                    continue
+                record = by_esm.setdefault(esm_code, {
+                    "path": text_value(raw.get("esm_path")),
+                    "auction": [],
+                    "gmarket": [],
+                })
+                site = text_value(raw.get("site"))
+                site_code = text_value(raw.get("site_code"))
+                if not site_code:
+                    continue
+                if "옥션" in site or site.upper().startswith("A"):
+                    if site_code not in record["auction"]:
+                        record["auction"].append(site_code)
+                    auction_to_esm.setdefault(site_code, esm_code)
+                elif "마켓" in site or site.upper().startswith("G"):
+                    if site_code not in record["gmarket"]:
+                        record["gmarket"].append(site_code)
+                    gmarket_to_esm.setdefault(site_code, esm_code)
+    ESM_CODE_MATCHING_CACHE = {
+        "byEsm": by_esm,
+        "auctionToEsm": auction_to_esm,
+        "gmarketToEsm": gmarket_to_esm,
+    }
+    return ESM_CODE_MATCHING_CACHE
+
+
+def search_esm_code_by_name(title: str) -> str:
+    """상품명 토큰으로 ESM 카테고리 경로를 검색해 가장 적합한 ESM 코드를 반환."""
+    matching = load_esm_code_matching()
+    by_esm = matching.get("byEsm") if isinstance(matching.get("byEsm"), dict) else {}
+    tokens = category_query_tokens(title)
+    if not tokens:
+        return ""
+    compact_title = category_compact(title)
+    best_code, best_score = "", 0
+    for esm_code, record in by_esm.items():
+        path_text = category_text(record.get("path"))
+        if not path_text or not record.get("auction") and not record.get("gmarket"):
+            continue
+        compact_path = category_compact(path_text)
+        parts = category_path_parts(path_text)
+        leaf = category_compact(parts[-1]) if parts else ""
+        score = 0
+        if leaf and leaf in compact_title:
+            score += 60 + len(leaf)
+        for token in tokens:
+            if token == leaf:
+                score += 50
+            elif leaf and token in leaf:
+                score += 24
+            elif token in compact_path:
+                score += 10
+        if score and CATEGORY_EXCLUDED_PATH_RE.search(path_text):
+            score -= 650
+        if score > best_score:
+            best_code, best_score = esm_code, score
+    return best_code if best_score > 0 else ""
+
+
+def resolve_esm_export_categories(entry: dict) -> dict[str, str]:
+    """ESM 엑셀 export용 3코드(ESM/옥션/G마켓)를 공식 매칭표 기준으로 정합성 있게 확정."""
+    esm_code = category_value(entry, "esm")
+    auction_code = category_value(entry, "auction")
+    gmarket_code = category_value(entry, "gmarket")
+    matching = load_esm_code_matching()
+    by_esm = matching.get("byEsm") if isinstance(matching.get("byEsm"), dict) else {}
+    auction_to_esm = matching.get("auctionToEsm") if isinstance(matching.get("auctionToEsm"), dict) else {}
+    gmarket_to_esm = matching.get("gmarketToEsm") if isinstance(matching.get("gmarketToEsm"), dict) else {}
+
+    if not by_esm:
+        # 매칭표가 없으면 기존 값 그대로
+        return {"esm": esm_code, "auction": auction_code, "gmarket": gmarket_code, "esmPath": ""}
+
+    # 1) ESM 코드가 매칭표에 없으면 옥션/G마켓 코드 역추적 → 상품명 검색 순으로 복구
+    if esm_code not in by_esm:
+        recovered = auction_to_esm.get(auction_code) or gmarket_to_esm.get(gmarket_code)
+        if not recovered:
+            title = text_value(entry.get("title") or entry.get("sourceName"))
+            recovered = search_esm_code_by_name(title)
+        if recovered:
+            esm_code = recovered
+
+    record = by_esm.get(esm_code)
+    if not record:
+        return {"esm": esm_code, "auction": auction_code, "gmarket": gmarket_code, "esmPath": ""}
+
+    # 2) 옥션/G마켓 코드는 해당 ESM 카테고리에 매칭된 범위 안에 있어야 함 (N:N 제약)
+    allowed_auction = record.get("auction") if isinstance(record.get("auction"), list) else []
+    allowed_gmarket = record.get("gmarket") if isinstance(record.get("gmarket"), list) else []
+    if auction_code not in allowed_auction:
+        auction_code = allowed_auction[0] if allowed_auction else ""
+    if gmarket_code not in allowed_gmarket:
+        gmarket_code = allowed_gmarket[0] if allowed_gmarket else ""
+
+    return {
+        "esm": esm_code,
+        "auction": auction_code,
+        "gmarket": gmarket_code,
+        "esmPath": category_text(record.get("path")),
+    }
+
+
+def resolve_elevenst_leaf_code(entry: dict, code: str) -> str:
+    """11번가 카테고리 코드를 leaf 코드로 검증/보정한다."""
+    items = load_category_reference("11st")
+    if not items:
+        return code
+    by_code = {category_text(item.get("code")): item for item in items}
+    item = by_code.get(code)
+    if item is not None and item.get("isLeaf"):
+        return code
+
+    # leaf가 아니면: 해당 경로 하위의 leaf 중 첫 번째로 보정
+    if item is not None:
+        prefix = category_compact(category_text(item.get("path")))
+        children = [
+            child for child in items
+            if child.get("isLeaf") and category_compact(category_text(child.get("path"))).startswith(f"{prefix}>")
+        ]
+        if children:
+            children.sort(key=lambda child: (int(child.get("depth") or 0), category_text(child.get("path"))))
+            return category_text(children[0].get("code"))
+        return code
+
+    # 코드가 카탈로그에 없으면 상품명으로 leaf 재검색
+    title = text_value(entry.get("title") or entry.get("sourceName"))
+    matches = search_category_reference("11st", title, 10)
+    for match in matches:
+        if match.get("isLeaf"):
+            return category_text(match.get("code"))
+    return code
+
+
 def write_elevenst_template_export(entries: list[dict]) -> dict:
     if not ELEVENST_TEMPLATE_PATH.is_file():
         raise FileNotFoundError(f"11번가 공식 양식 파일을 찾지 못했습니다: {ELEVENST_TEMPLATE_PATH}")
@@ -7785,6 +7952,7 @@ def write_elevenst_template_export(entries: list[dict]) -> dict:
         labels = option_labels_for_export(entry)
         option_prices = option_prices_for_export(entry, len(labels))
         category_code = category_value(entry, "elevenst", "11st", "eleven")
+        category_code = resolve_elevenst_leaf_code(entry, category_code)
         excel_set(sheet, row_number, 2, category_code)
         excel_set(sheet, row_number, 3, entry["gs"])
         excel_set(sheet, row_number, 4, entry["gs"])
@@ -7875,15 +8043,17 @@ def write_esm_template_export(entries: list[dict]) -> dict:
         main_image = export_main_image_for_entry(entry)
         add_images = export_additional_images_for_entry(entry)
         categories = entry.get("categories") if isinstance(entry.get("categories"), dict) else {}
-        esm_code = category_value(entry, "esm")
-        auction_code = category_value(entry, "auction")
-        gmarket_code = category_value(entry, "gmarket")
+        resolved_esm = resolve_esm_export_categories(entry)
+        esm_code = resolved_esm["esm"]
+        auction_code = resolved_esm["auction"]
+        gmarket_code = resolved_esm["gmarket"]
+        esm_template_text = text_value(categories.get("esm_template")) or resolved_esm["esmPath"]
         excel_set(sheet, row_number, 1, sequence)
         excel_set(sheet, row_number, 2, "옥션/G마켓")
         excel_set(sheet, row_number, 3, "rkghrud")
         excel_set(sheet, row_number, 4, "rkghrud")
         excel_set(sheet, row_number, 5, title)
-        excel_set(sheet, row_number, 10, text_value(categories.get("esm_template")))
+        excel_set(sheet, row_number, 10, esm_template_text)
         excel_set(sheet, row_number, 11, esm_code)
         excel_set(sheet, row_number, 12, auction_code)
         excel_set(sheet, row_number, 13, gmarket_code)
