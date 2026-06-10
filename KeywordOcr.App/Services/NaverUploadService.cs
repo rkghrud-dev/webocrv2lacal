@@ -474,7 +474,8 @@ public sealed class NaverUploadService
                 ["certificationTargetExcludeContent"] = new JsonObject
                 {
                     ["childCertifiedProductExclusionYn"] = true,
-                    ["kcCertifiedProductExclusionYn"] = true,
+                    // KcCertificationExclusionType enum: "TRUE" | "FALSE" | "KC_EXEMPTION_OBJECT" (문자열만 허용, boolean 금지)
+                    ["kcCertifiedProductExclusionYn"] = "TRUE",
                     ["greenCertifiedProductExclusionYn"] = true,
                 },
                 ["minorPurchasable"] = true,
