@@ -7934,27 +7934,58 @@ def elevenst_image_url(value: object) -> str:
     return url if path_part.endswith((".jpg", ".jpeg", ".png")) else ""
 
 
+def _write_xls_cells_com(target_path: Path, cells: list[tuple[int, int, object]]) -> None:
+    """설치된 Excel(COM)로 .xls를 열어 값만 입력 — 양식 내부 구조를 그대로 보존한다."""
+    import pythoncom
+    import win32com.client
+
+    pythoncom.CoInitialize()
+    excel = None
+    try:
+        excel = win32com.client.DispatchEx("Excel.Application")
+        excel.Visible = False
+        excel.DisplayAlerts = False
+        workbook = excel.Workbooks.Open(str(target_path))
+        try:
+            sheet = workbook.Worksheets(1)
+            for row, col, value in cells:
+                sheet.Cells(row, col).Value = value
+            workbook.Save()
+        finally:
+            workbook.Close(SaveChanges=False)
+    finally:
+        if excel is not None:
+            excel.Quit()
+        pythoncom.CoUninitialize()
+
+
+def _write_xls_cells_xlutils(template_path: Path, target_path: Path, cells: list[tuple[int, int, object]]) -> None:
+    """폴백: xlrd/xlutils 재작성 (일부 사이트 양식 검증에서 거부될 수 있음)."""
+    import xlrd
+    from xlutils.copy import copy as xlutils_copy
+
+    source_book = xlrd.open_workbook(str(template_path), formatting_info=True)
+    workbook = xlutils_copy(source_book)
+    sheet = workbook.get_sheet(0)
+    for row, col, value in cells:
+        sheet.write(row - 1, col - 1, value)
+    workbook.save(str(target_path))
+
+
 def write_elevenst_template_export(entries: list[dict]) -> dict:
     if not ELEVENST_TEMPLATE_PATH.is_file():
         raise FileNotFoundError(f"11번가 공식 양식 파일을 찾지 못했습니다: {ELEVENST_TEMPLATE_PATH}")
-    # 11번가 대량등록은 .xls만 허용 — 공식 .xls 템플릿에 직접 기록한다.
-    try:
-        import xlrd
-        from xlutils.copy import copy as xlutils_copy
-    except Exception as exc:
-        raise RuntimeError(f"xls 라이브러리 로드 실패 (pip install xlrd xlwt xlutils): {exc}") from exc
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     xls_name = safe_name(f"11번가_업로드_{stamp}.xls")
     xls_path = EXPORT_ROOT / xls_name
-    source_book = xlrd.open_workbook(str(ELEVENST_TEMPLATE_PATH), formatting_info=True)
-    workbook = xlutils_copy(source_book)
-    sheet = workbook.get_sheet(0)
+
+    cell_values: list[tuple[int, int, object]] = []
 
     def put(row_1based: int, col_1based: int, value: object) -> None:
         if value is None or value == "":
             return
-        sheet.write(row_1based - 1, col_1based - 1, value)
+        cell_values.append((row_1based, col_1based, value))
 
     # 공식 가이드: "아래 6행부터 작성합니다" — 헤더/예시(1~5행)는 그대로 둔다.
     row_number = 6
@@ -8030,7 +8061,15 @@ def write_elevenst_template_export(entries: list[dict]) -> dict:
         put(row_number, 114, "상품 상세설명을 참고해 주세요.")
         put(row_number, 115, "상품 상세설명 및 판매자 반품/교환 정책을 참고해 주세요.")
         row_number += 1
-    workbook.save(str(xls_path))
+
+    # 우선 Excel COM으로 공식 템플릿 사본에 값만 채워 양식 구조를 보존한다.
+    import shutil as _shutil
+    _shutil.copy2(ELEVENST_TEMPLATE_PATH, xls_path)
+    try:
+        _write_xls_cells_com(xls_path, cell_values)
+    except Exception:
+        xls_path.unlink(missing_ok=True)
+        _write_xls_cells_xlutils(ELEVENST_TEMPLATE_PATH, xls_path, cell_values)
     return export_response_for_file(xls_path, len(entries), "xls", template="11st-official")
 
 
