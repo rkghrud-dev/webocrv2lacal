@@ -3348,7 +3348,7 @@ function MarketUploadWorkbench({
   }).length;
   const apiSelectedCount = availableKeys.filter((key) => {
     const channel = scopedChannels.find((item) => key.startsWith(`${item.key}:`));
-    return uploadSelection.has(key) && !['11번가', 'ESM'].includes(channel?.market);
+    return uploadSelection.has(key) && channel?.market !== 'ESM';
   }).length;
 
   const toggleUpload = (key) => {
@@ -3588,7 +3588,7 @@ function MarketUploadWorkbench({
   };
   const runApiUpload = async () => {
     if (uploadBusy) return;
-    const entries = buildSelectedEntries((channel) => !['11번가', 'ESM'].includes(channel.market));
+    const entries = buildSelectedEntries((channel) => channel.market !== 'ESM');
     const payload = storeUploadPayload(entries, 'apiMarketUploadQueue');
     setUploadBusy(true);
     setUploadStatus((prev) => {
@@ -4057,7 +4057,7 @@ function UploadResultTable({
   const [categoryResults, setCategoryResults] = useState([]);
   const [categoryBusy, setCategoryBusy] = useState(false);
   const [categoryError, setCategoryError] = useState('');
-  const apiMarkets = new Set(['네이버', '쿠팡', '롯데ON']);
+  const apiMarkets = new Set(['네이버', '쿠팡', '롯데ON', '11번가']);
   const directRetryMarkets = new Set(['네이버', '쿠팡']);
   const categoryFixMarkets = new Set(['롯데ON']);
   const channels = ['A', 'B'].flatMap((account) => MARKETS.map((market) => ({
