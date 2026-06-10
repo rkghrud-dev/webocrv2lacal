@@ -69,6 +69,8 @@ try:
         approve_mapping as approve_category_mapping_rule,
         get_approved_mapping as get_approved_category_mapping,
         get_candidates as get_category_match_candidates,
+        get_lotteon_pair,
+        record_lotteon_pair,
         search_categories as search_category_matching_db,
     )
 except Exception:
@@ -76,6 +78,8 @@ except Exception:
     approve_category_mapping_rule = None
     get_approved_category_mapping = None
     get_category_match_candidates = None
+    get_lotteon_pair = None
+    record_lotteon_pair = None
     search_category_matching_db = None
 
 try:
@@ -6095,6 +6099,65 @@ def update_export_image_selections(entries: list[dict]) -> None:
         write_json(target, payload)
 
 
+def resolve_lotteon_upload_categories(entry: dict, out: dict[str, str]) -> None:
+    """롯데ON 표준/전시/품목 코드를 학습매핑 → LLM 판정 → 페어 테이블 순으로 채운다."""
+    standard = text_value(out.get("lotte_standard"))
+    display = text_value(out.get("lotte_display"))
+    item = text_value(out.get("lotte_item"))
+    naver_code = text_value(out.get("naver"))
+
+    def adopt(code: str) -> None:
+        nonlocal standard, display
+        value = text_value(code)
+        if value.startswith("BC") and not standard:
+            standard = value
+        elif value.startswith(("FC", "EC")) and not display:
+            display = value
+
+    # 1) 학습된 네이버→롯데ON 매핑 (검수/LLM으로 확정된 규칙)
+    if not standard and naver_code and get_approved_category_mapping is not None:
+        try:
+            approved = get_approved_category_mapping(naver_code, "lotteon")
+        except Exception:
+            approved = None
+        if approved:
+            adopt(approved.get("target_category_id"))
+
+    # 2) LLM 판정 (결과는 매핑 규칙으로 자동 저장되어 다음부터 1번에서 잡힘)
+    if not standard and naver_code:
+        try:
+            judged = llm_judge_category_matches([
+                {
+                    "gs": text_value(entry.get("gs")),
+                    "name": text_value(entry.get("title") or entry.get("sourceName")),
+                    "categories": {"naver": naver_code, "naverPath": ""},
+                }
+            ], apply=True)
+            for judged_row in judged.get("rows", []) if isinstance(judged, dict) else []:
+                choice = (judged_row.get("choices") or {}).get("lotteon") if isinstance(judged_row, dict) else None
+                if isinstance(choice, dict) and choice.get("validCandidate"):
+                    adopt(choice.get("code"))
+        except Exception:
+            pass
+
+    # 3) 표준이 확보되면 페어 테이블로 전시/품목 유도
+    if standard and (not display or not item) and get_lotteon_pair is not None:
+        try:
+            pair = get_lotteon_pair(standard)
+        except Exception:
+            pair = None
+        if pair:
+            display = display or text_value(pair.get("display_code"))
+            item = item or text_value(pair.get("item_code"))
+
+    if standard:
+        out["lotte_standard"] = standard
+    if display:
+        out["lotte_display"] = display
+    if standard or display:
+        out["lotte_item"] = item or "38"
+
+
 def infer_direct_upload_categories(entry: dict) -> dict[str, str]:
     text = " ".join(
         text_value(entry.get(key))
@@ -6190,6 +6253,8 @@ def infer_direct_upload_categories(entry: dict) -> dict[str, str]:
         matches = search_category_reference("esm", text, 1)
         if matches:
             out["esm"] = text_value(matches[0].get("code"))
+    # 롯데ON: 학습매핑 → LLM 판정 → 페어 테이블 순으로 우선 해석
+    resolve_lotteon_upload_categories(entry, out)
     if not out.get("lotte_standard") or not out.get("lotte_display"):
         matches = search_category_reference("lotteon", text, 12)
         if not out.get("lotte_standard"):
@@ -6200,6 +6265,17 @@ def infer_direct_upload_categories(entry: dict) -> dict[str, str]:
             display = next((item for item in matches if text_value(item.get("type")).lower() == "display"), None)
             if display:
                 out["lotte_display"] = text_value(display.get("code"))
+        # 텍스트 검색으로 표준이 늦게 잡힌 경우 페어 테이블로 전시/품목 보완
+        if out.get("lotte_standard") and (not out.get("lotte_display") or not out.get("lotte_item")) and get_lotteon_pair is not None:
+            try:
+                pair = get_lotteon_pair(out["lotte_standard"])
+            except Exception:
+                pair = None
+            if pair:
+                if not out.get("lotte_display"):
+                    out["lotte_display"] = text_value(pair.get("display_code"))
+                if not out.get("lotte_item"):
+                    out["lotte_item"] = text_value(pair.get("item_code")) or "38"
     return out
 
 
@@ -6279,6 +6355,7 @@ def write_direct_upload_workbook(job_id: str, entry: dict) -> Path:
     if not detail_html:
         detail_html = "상세페이지 참조"
     categories = infer_direct_upload_categories(entry)
+    entry["resolvedCategories"] = dict(categories)
     upload_category_mode = text_value(entry.get("categoryMode")).lower() == "upload"
     naver_category = "" if upload_category_mode and entry["market"] == "네이버" else categories.get("naver", "")
     coupang_category = "" if upload_category_mode and entry["market"] == "쿠팡" else categories.get("coupang", "")
@@ -6944,6 +7021,19 @@ def run_market_upload_job(job_id: str, payload: dict) -> None:
                 break
             result = upload_single_entry(entry, group_log)
             group_results.append(result)
+            if (
+                result.get("status") == "uploaded" and entry.get("market") == "롯데ON"
+                and record_lotteon_pair is not None
+            ):
+                resolved = result.get("resolvedCategories") if isinstance(result.get("resolvedCategories"), dict) else {}
+                try:
+                    record_lotteon_pair(
+                        text_value(resolved.get("lotte_standard")),
+                        text_value(resolved.get("lotte_display")),
+                        text_value(resolved.get("lotte_item")) or "38",
+                    )
+                except Exception:
+                    pass
             group_log.append(f"{entry['channel']} {entry['gs']} -> {result['status']} {result.get('error', '')}")
             with upload_lock:
                 results.append(result)

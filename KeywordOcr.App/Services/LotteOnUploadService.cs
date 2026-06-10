@@ -534,12 +534,14 @@ public sealed class LotteOnUploadService
             "pdItmsCd",
             "상품품목코드");
 
+        // 서버(local_api_server)가 학습매핑/LLM판정/페어테이블로 채워서 넘기는 명시 페어를 신뢰한다.
+        // 페어 검증은 업로드 결과로 이뤄지며, 성공 시 서버가 페어 DB에 자동 등록한다.
         var explicitCategory = TryCompleteCategory(
             CleanCategoryCode(standard),
             CleanCategoryCode(display),
             CleanCategoryCode(itemCode),
             productName,
-            allowUnverifiedPair: false);
+            allowUnverifiedPair: true);
         if (explicitCategory is not null)
             return explicitCategory;
 

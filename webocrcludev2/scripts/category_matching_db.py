@@ -180,6 +180,96 @@ def get_approved_mapping(
     return dict(row) if row else None
 
 
+# 롯데ON 표준(BC) ↔ 전시(FC/EC) 검증 페어 시드.
+# 기존 LotteOnUploadService.cs / infer_direct_upload_categories 하드코딩에서 이전.
+LOTTEON_SEED_PAIRS: tuple[tuple[str, str, str], ...] = (
+    ("BC10080200", "FC19040401", "38"),
+    ("BC04071100", "FC17101800", "38"),
+    ("BC37101000", "FC02061010", "38"),
+    ("BC41081502", "FC08120400", "38"),
+    ("BC55040500", "FC03040405", "38"),
+    ("BC66120200", "FC08071202", "38"),
+    ("BC10040800", "FC19041003", "04"),
+    ("BC43071000", "FC18101001", "38"),
+    ("BC63120300", "FC11160703", "38"),
+    ("BC20040800", "EC10400324", "38"),
+)
+
+
+def ensure_lotteon_pairs(db_path: str | Path = DEFAULT_DB_PATH) -> None:
+    """Create the LotteON standard↔display pair table and seed verified pairs."""
+    current_time = now_text()
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS lotteon_category_pairs (
+                standard_code TEXT PRIMARY KEY,
+                display_code TEXT NOT NULL,
+                item_code TEXT NOT NULL DEFAULT '38',
+                source TEXT NOT NULL DEFAULT 'seed',
+                success_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        for standard, display, item in LOTTEON_SEED_PAIRS:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO lotteon_category_pairs
+                    (standard_code, display_code, item_code, source, success_count, created_at, updated_at)
+                VALUES (?, ?, ?, 'seed', 0, ?, ?)
+                """,
+                (standard, display, item, current_time, current_time),
+            )
+        conn.commit()
+
+
+def get_lotteon_pair(standard_code: str, *, db_path: str | Path = DEFAULT_DB_PATH) -> dict[str, Any] | None:
+    """Return the display/item codes paired with a LotteON standard category."""
+    if not standard_code:
+        return None
+    ensure_lotteon_pairs(db_path)
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM lotteon_category_pairs WHERE standard_code = ?",
+            (standard_code,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def record_lotteon_pair(
+    standard_code: str,
+    display_code: str,
+    item_code: str = "38",
+    *,
+    source: str = "upload_success",
+    db_path: str | Path = DEFAULT_DB_PATH,
+) -> dict[str, Any] | None:
+    """Save (or reinforce) a LotteON pair after a successful upload."""
+    if not standard_code or not display_code:
+        return None
+    ensure_lotteon_pairs(db_path)
+    current_time = now_text()
+    with connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO lotteon_category_pairs
+                (standard_code, display_code, item_code, source, success_count, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(standard_code) DO UPDATE SET
+                display_code = excluded.display_code,
+                item_code = excluded.item_code,
+                source = excluded.source,
+                success_count = lotteon_category_pairs.success_count + 1,
+                updated_at = excluded.updated_at
+            """,
+            (standard_code, display_code, item_code or "38", source, current_time, current_time),
+        )
+        conn.commit()
+    return get_lotteon_pair(standard_code, db_path=db_path)
+
+
 def approve_mapping(
     *,
     source_category_id: str,
