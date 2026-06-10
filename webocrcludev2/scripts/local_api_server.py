@@ -6939,7 +6939,7 @@ def run_market_upload_job(job_id: str, payload: dict) -> None:
 
     settings = read_market_key_settings().get("items", {})
     results: list[dict] = []
-    api_markets = {"네이버", "쿠팡", "롯데ON"}
+    api_markets = {"네이버", "쿠팡", "롯데ON", "11번가"}
     duplicate_check_enabled = payload.get("duplicateCheck") is not False
     parallel_accounts = payload.get("parallelAccounts") is not False
     duplicate_index = collect_market_upload_success_index() if duplicate_check_enabled else {}
@@ -6987,9 +6987,22 @@ def run_market_upload_job(job_id: str, payload: dict) -> None:
         market = entry["market"]
         key_id = market_key_id(entry["account"], market)
         result = {**entry, "status": "failed", "updatedAt": now_text()}
+        if market == "11번가":
+            # 11번가는 Open API(키파일: Desktop/key/elevenst_api_key.txt)로 직접 등록
+            log_lines.append(f"[{now_text()}] {entry['channel']} {entry['gs']} 11번가 API 업로드 시작")
+            active_key = upload_result_key(entry)
+            with upload_lock:
+                active_entries[active_key] = {**entry, "status": "running", "updatedAt": now_text()}
+            update_job_progress(f"{entry['channel']} 11번가 API 실행")
+            try:
+                result = upload_elevenst_product(entry)
+            finally:
+                with upload_lock:
+                    active_entries.pop(active_key, None)
+            return result
         if market not in api_markets:
             result["status"] = "skipped"
-            result["error"] = "API 업로드 대상이 아닙니다. 11번가/ESM은 엑셀 export를 사용합니다."
+            result["error"] = "API 업로드 대상이 아닙니다. ESM은 엑셀 export를 사용합니다."
             return result
         if key_id not in settings:
             result["error"] = f"{entry['channel']} 키 파일이 없습니다."
@@ -7076,7 +7089,7 @@ def run_market_upload_job(job_id: str, payload: dict) -> None:
                     "existingSourceFile": duplicate.get("sourceFile", ""),
                     "reason": duplicate.get("reason", "기존 업로드 성공 이력 있음"),
                 })
-            elif key_id not in settings:
+            elif market != "11번가" and key_id not in settings:
                 skip_result = {**entry, "status": "failed", "updatedAt": now_text(),
                                "error": f"{entry['channel']} 키 파일이 없습니다."}
                 skipped.append(skip_result)
@@ -7932,6 +7945,151 @@ def elevenst_image_url(value: object) -> str:
         return ""
     path_part = urllib.parse.urlparse(url).path.lower()
     return url if path_part.endswith((".jpg", ".jpeg", ".png")) else ""
+
+
+def load_elevenst_api_key() -> str:
+    env_key = (os.environ.get("ELEVENST_API_KEY") or "").strip()
+    if env_key:
+        return env_key
+    key_path = Path(os.path.expanduser("~")) / "Desktop" / "key" / "elevenst_api_key.txt"
+    if key_path.is_file():
+        return key_path.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def _xml_cdata(value: object) -> str:
+    return "<![CDATA[" + text_value(value).replace("]]>", "]]]]><![CDATA[>") + "]]>"
+
+
+def build_elevenst_product_xml(entry: dict) -> str:
+    """11번가 상품등록(ProductService) XML 생성. 검증된 필드 구성 사용."""
+    title = trim_at_word(clean_product_title(entry.get("title")) or clean_product_title(entry.get("sourceName")) or entry.get("gs", ""), 100)
+    price = parse_upload_price(entry.get("salePrice") or entry.get("price")) or 1000
+    category_code = resolve_elevenst_leaf_code(entry, category_value(entry, "elevenst", "11st", "eleven"))
+    if not category_code:
+        raise ValueError("11번가 카테고리 코드를 결정하지 못했습니다.")
+    main_image = elevenst_image_url(export_main_image_for_entry(entry))
+    if not main_image:
+        raise ValueError("공개 대표이미지 URL(jpg/jpeg/png)이 없습니다.")
+    add_images = [
+        url for url in (elevenst_image_url(image) for image in export_additional_images_for_entry(entry))
+        if url
+    ][:3]
+    detail_html = export_detail_html_for_entry(entry)
+    labels = option_labels_for_export(entry)
+    option_prices = option_prices_for_export(entry, len(labels))
+
+    parts = [
+        '<?xml version="1.0" encoding="euc-kr"?>',
+        "<Product>",
+        "<selMthdCd>01</selMthdCd>",
+        f"<dispCtgrNo>{category_code}</dispCtgrNo>",
+        "<prdTypCd>01</prdTypCd>",
+        f"<prdNm>{_xml_cdata(title)}</prdNm>",
+        f"<brand>{text_value(entry.get('brand')) or '샤플라이'}</brand>",
+        "<rmaterialTypCd>04</rmaterialTypCd>",
+        "<orgnTypCd>03</orgnTypCd>",
+        "<orgnNmVal>중국</orgnNmVal>",
+        "<suplDtyfrPrdClfCd>01</suplDtyfrPrdClfCd>",
+        "<forAbrdBuyClf>01</forAbrdBuyClf>",
+        "<prdStatCd>01</prdStatCd>",
+        "<minorSelCnYn>Y</minorSelCnYn>",
+        f"<sellerPrdCd>{text_value(entry.get('gs'))}</sellerPrdCd>",
+        f"<prdImage01>{main_image}</prdImage01>",
+    ]
+    for index, image in enumerate(add_images, start=2):
+        parts.append(f"<prdImage0{index}>{image}</prdImage0{index}>")
+    parts += [
+        f"<htmlDetail>{_xml_cdata(detail_html)}</htmlDetail>",
+        "<selTermUseYn>N</selTermUseYn>",
+        f"<selPrc>{price}</selPrc>",
+    ]
+    if labels:
+        parts += [
+            "<optSelectYn>Y</optSelectYn>",
+            "<txtColCnt>1</txtColCnt>",
+            "<optionAllQty>999</optionAllQty>",
+            "<optMixYn>Y</optMixYn>",
+            "<ProductRootOption>",
+            "<colTitle>옵션</colTitle>",
+        ]
+        for label, add_price in zip(labels, option_prices):
+            parts += [
+                "<ProductOption>",
+                f"<colOptPrice>{int(add_price or 0)}</colOptPrice>",
+                f"<colValue0>{_xml_cdata(label[:25])}</colValue0>",
+                "</ProductOption>",
+            ]
+        parts.append("</ProductRootOption>")
+    else:
+        parts.append("<prdSelQty>999</prdSelQty>")
+    parts += [
+        "<dlvCnAreaCd>01</dlvCnAreaCd>",
+        "<dlvWyCd>01</dlvWyCd>",
+        "<dlvEtprsCd>00034</dlvEtprsCd>",
+        "<dlvCstInstBasiCd>01</dlvCstInstBasiCd>",
+        "<bndlDlvCnYn>Y</bndlDlvCnYn>",
+        "<dlvCstPayTypCd>01</dlvCstPayTypCd>",
+        "<jejuDlvCst>3000</jejuDlvCst>",
+        "<islandDlvCst>6000</islandDlvCst>",
+        "<rtngdDlvCst>3000</rtngdDlvCst>",
+        "<exchDlvCst>6000</exchDlvCst>",
+        f"<asDetail>{_xml_cdata('판매자 고객센터 문의 010-2324-8352')}</asDetail>",
+        f"<rtngExchDetail>{_xml_cdata('상품 상세설명 및 판매자 반품/교환 정책을 참고해 주세요.')}</rtngExchDetail>",
+        "<dlvClf>02</dlvClf>",
+        "<ProductNotification>",
+        "<type>891045</type>",
+        "<item><code>11800</code><name>상세페이지 참조</name></item>",
+        "<item><code>11905</code><name>상세페이지 참조</name></item>",
+        "<item><code>23760413</code><name>판매자 고객센터 문의</name></item>",
+        "<item><code>23759100</code><name>중국</name></item>",
+        "<item><code>23756033</code><name>해당사항 없음</name></item>",
+        "</ProductNotification>",
+        "</Product>",
+    ]
+    return "\n".join(parts)
+
+
+def upload_elevenst_product(entry: dict) -> dict:
+    """11번가 상품등록 API 호출. 결과: {status, productId, error, rawStatus}."""
+    result = {**entry, "status": "failed", "updatedAt": now_text(), "error": "", "productId": ""}
+    api_key = load_elevenst_api_key()
+    if not api_key:
+        result["error"] = "11번가 API 키가 없습니다 (Desktop/key/elevenst_api_key.txt)"
+        return result
+    try:
+        xml = build_elevenst_product_xml(entry)
+    except Exception as exc:
+        result["error"] = str(exc)[:300]
+        return result
+    request = urllib.request.Request(
+        "http://api.11st.co.kr/rest/prodservices/product",
+        data=xml.encode("euc-kr", errors="replace"),
+        headers={"openapikey": api_key, "Content-Type": "text/xml;charset=euc-kr"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            body = response.read().decode("euc-kr", errors="replace")
+    except urllib.error.HTTPError as exc:
+        result["error"] = scrub_secret(exc.read().decode("euc-kr", errors="replace")[:400], 400)
+        return result
+    except Exception as exc:
+        result["error"] = str(exc)[:300]
+        return result
+    code_match = re.search(r"<resultCode>(\d+)</resultCode>", body)
+    message_match = re.search(r"<message>(.*?)</message>", body, re.S)
+    product_match = re.search(r"<productNo>(\d+)</productNo>", body)
+    result_code = code_match.group(1) if code_match else ""
+    message = (message_match.group(1) if message_match else body[:300]).strip()
+    result["rawStatus"] = result_code
+    if result_code in {"200", "210"} and product_match:
+        result["status"] = "uploaded"
+        result["productId"] = product_match.group(1)
+        result["spdNo"] = product_match.group(1)
+    else:
+        result["error"] = scrub_secret(message, 400)
+    return result
 
 
 def _write_xls_cells_com(target_path: Path, cells: list[tuple[int, int, object]]) -> None:
