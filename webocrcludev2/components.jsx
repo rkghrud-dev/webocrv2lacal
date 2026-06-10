@@ -3290,7 +3290,7 @@ function MarketUploadWorkbench({
   });
   const getCellKey = (row, channel) => `${channel.key}:${row.gs}`;
   const historyFor = (row, channel) => history?.[getCellKey(row, channel)] || null;
-  const isUploadedHistory = (item) => Boolean(item && (
+  const isUploadedHistory = (item) => Boolean(item && item.status !== 'deleted' && (
     item.status === 'uploaded'
     || item.duplicate
     || item.rawStatus === 'OK'
@@ -4080,6 +4080,7 @@ function UploadResultTable({
   const labelFor = (status, market) => {
     if (status === 'running') return '서버처리';
     if (status === 'uploaded') return '업로드 완료';
+    if (status === 'deleted') return '삭제됨(재업로드 가능)';
     if (status === 'failed') return '실패';
     if (status === 'exported' || status === 'excel') return '엑셀 저장';
     if (status === 'skipped') return '제외';
@@ -4180,6 +4181,29 @@ function UploadResultTable({
       }
     }, 1200);
   };
+  const markDeleted = async (items) => {
+    if (!items.length) return;
+    if (!window.confirm('마켓에서 삭제된 상품으로 처리하고 재업로드를 허용합니다. 계속할까요?')) return;
+    try {
+      const response = await fetch('/api/market-upload/mark-deleted', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ items }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result?.ok) throw new Error(result?.error || `delete ${response.status}`);
+      onUploadHistoryChange?.(items.map((it) => ({
+        channelKey: it.channel,
+        account: (it.channel || '').split(':')[0] || '',
+        market: it.market,
+        gs: it.gs,
+        productId: it.productId,
+      })), 'deleted');
+    } catch (error) {
+      window.alert(`삭제 처리 실패: ${error.message}`);
+    }
+  };
+
   const retryItems = async (items) => {
     const rowsToSend = items.filter(Boolean);
     if (!rowsToSend.length) return;
@@ -4333,6 +4357,7 @@ function UploadResultTable({
                 const status = cellStatus(row, channel);
                 const canRetry = status === 'failed' && directRetryMarkets.has(channel.market);
                 const canFixCategory = status === 'failed' && categoryFixMarkets.has(channel.market);
+                const canDelete = status === 'uploaded' && item?.productId;
                 const retryItem = normaliseRetryItem(item, row, channel);
                 return (
                   <div className={`result-market-cell is-${status}`} key={channel.key}>
@@ -4342,6 +4367,14 @@ function UploadResultTable({
                     {canRetry && (
                       <button type="button" onClick={() => retryItems([retryItem])} disabled={retrying.size > 0}>
                         재업로드
+                      </button>
+                    )}
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={() => markDeleted([{ market: channel.market, productId: item.productId, gs: row.gs, channel: channel.key }])}
+                        disabled={retrying.size > 0}>
+                        삭제(이력해제)
                       </button>
                     )}
                     {canFixCategory && (

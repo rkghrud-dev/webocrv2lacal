@@ -1984,6 +1984,7 @@ def write_json(path: Path, payload: dict) -> None:
 
 def collect_upload_history(limit_jobs: int = 80) -> list[dict]:
     entries: dict[str, dict] = {}
+    deleted_ids = collect_deleted_upload_product_ids()
     job_paths = sorted(JOBS_ROOT.glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)[:limit_jobs]
     for job_path in reversed(job_paths):
         job = read_json(job_path, {})
@@ -2017,6 +2018,11 @@ def collect_upload_history(limit_jobs: int = 80) -> list[dict]:
             normalised["status"] = status
             normalised["updatedAt"] = text_value(item.get("updatedAt") or updated_at)
             normalised["jobId"] = job_path.stem
+            # 마켓에서 삭제된 상품은 이력에서 제외해 재업로드를 허용한다
+            market_name = canonical_upload_market(item.get("market") or channel.split(":")[-1])
+            if normalised["productId"] and (market_name, normalised["productId"]) in deleted_ids:
+                entries.pop(key, None)
+                continue
             entries[key] = normalised
     return list(entries.values())
 
@@ -9216,6 +9222,32 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
                     notes=category_text(payload.get("notes")),
                 )
                 self.send_json({"ok": True, "rule": rule})
+                return
+            if path == "/api/market-upload/mark-deleted":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                items = payload.get("items") if isinstance(payload.get("items"), list) else []
+                rows = []
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    market = text_value(item.get("market"))
+                    product_id = text_value(item.get("productId"))
+                    if not market or not product_id:
+                        continue
+                    rows.append({
+                        "market": market,
+                        "productId": product_id,
+                        "gs": text_value(item.get("gs")),
+                        "channel": text_value(item.get("channel")),
+                        "deleteOk": "true",
+                        "deletedAt": now_text(),
+                        "reason": text_value(item.get("reason")) or "사용자 삭제 처리(재업로드 허용)",
+                    })
+                if rows:
+                    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    report_path = JOBS_ROOT / f"manual_{stamp}_delete_report.json"
+                    write_json(report_path, rows)
+                self.send_json({"ok": True, "count": len(rows)})
                 return
             if path == "/api/category-match/llm-judge":
                 payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
