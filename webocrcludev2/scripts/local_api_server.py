@@ -7568,7 +7568,7 @@ def write_market_export(payload: dict) -> dict:
     return export_response_for_file(target, len(entries), file_format)
 
 
-ELEVENST_TEMPLATE_PATH = Path(r"C:\Users\rkghr\Downloads\ExcelUnitProductList-Ver2.50.xlsx")
+ELEVENST_TEMPLATE_PATH = Path(r"C:\Users\rkghr\Downloads\ExcelUnitProductList-Ver2.50 (1).xls")
 ESM_TEMPLATE_PATH = Path(r"C:\Users\rkghr\Downloads\new_basic_bulk (1).xlsx")
 ESM_TEMPLATE_SHEET = "NEW 일반상품"
 
@@ -7925,98 +7925,113 @@ def resolve_elevenst_leaf_code(entry: dict, code: str) -> str:
     return code
 
 
+def elevenst_image_url(value: object) -> str:
+    """11번가 이미지 컬럼용 URL — jpg/jpeg/png 확장자만 허용 (사이트 규격)."""
+    url = public_image_url(value)
+    if not url:
+        return ""
+    path_part = urllib.parse.urlparse(url).path.lower()
+    return url if path_part.endswith((".jpg", ".jpeg", ".png")) else ""
+
+
 def write_elevenst_template_export(entries: list[dict]) -> dict:
     if not ELEVENST_TEMPLATE_PATH.is_file():
         raise FileNotFoundError(f"11번가 공식 양식 파일을 찾지 못했습니다: {ELEVENST_TEMPLATE_PATH}")
+    # 11번가 대량등록은 .xls만 허용 — 공식 .xls 템플릿에 직접 기록한다.
     try:
-        from openpyxl import load_workbook
+        import xlrd
+        from xlutils.copy import copy as xlutils_copy
     except Exception as exc:
-        raise RuntimeError(f"openpyxl 로드 실패: {exc}") from exc
+        raise RuntimeError(f"xls 라이브러리 로드 실패 (pip install xlrd xlwt xlutils): {exc}") from exc
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    work_name = safe_name(f"11번가_업로드_{stamp}.xlsx")
-    work_path = EXPORT_ROOT / work_name
     xls_name = safe_name(f"11번가_업로드_{stamp}.xls")
     xls_path = EXPORT_ROOT / xls_name
-    workbook = load_workbook(ELEVENST_TEMPLATE_PATH)
-    sheet = workbook["대량등록 양식"] if "대량등록 양식" in workbook.sheetnames else workbook.worksheets[0]
-    if sheet.max_row >= 6:
-        sheet.delete_rows(6, max(1, sheet.max_row - 5))
+    source_book = xlrd.open_workbook(str(ELEVENST_TEMPLATE_PATH), formatting_info=True)
+    workbook = xlutils_copy(source_book)
+    sheet = workbook.get_sheet(0)
+
+    def put(row_1based: int, col_1based: int, value: object) -> None:
+        if value is None or value == "":
+            return
+        sheet.write(row_1based - 1, col_1based - 1, value)
+
+    # 공식 가이드: "아래 6행부터 작성합니다" — 헤더/예시(1~5행)는 그대로 둔다.
     row_number = 6
     for entry in entries:
         price = parse_upload_price(entry.get("salePrice") or entry.get("price")) or 1000
         consumer_price = parse_upload_price(entry.get("consumerPrice")) or round_100(price * 1.2) or price
         title = trim_at_word(entry.get("title") or entry.get("sourceName") or entry.get("gs"), 100)
-        main_image = export_main_image_for_entry(entry)
-        add_images = export_additional_images_for_entry(entry)
+        main_image = elevenst_image_url(export_main_image_for_entry(entry))
+        add_images = [
+            url for url in (elevenst_image_url(image) for image in export_additional_images_for_entry(entry))
+            if url
+        ]
         labels = option_labels_for_export(entry)
         option_prices = option_prices_for_export(entry, len(labels))
         category_code = category_value(entry, "elevenst", "11st", "eleven")
         category_code = resolve_elevenst_leaf_code(entry, category_code)
-        excel_set(sheet, row_number, 2, category_code)
-        excel_set(sheet, row_number, 3, entry["gs"])
-        excel_set(sheet, row_number, 4, entry["gs"])
-        excel_set(sheet, row_number, 5, title)
-        excel_set(sheet, row_number, 6, "샤플라이")
-        excel_set(sheet, row_number, 8, main_image)
+        put(row_number, 2, category_code)
+        put(row_number, 3, entry["gs"])
+        put(row_number, 4, entry["gs"])
+        put(row_number, 5, title)
+        put(row_number, 6, "샤플라이")
+        put(row_number, 8, main_image)
         for index, image in enumerate(add_images[:3], start=9):
-            excel_set(sheet, row_number, index, image)
-        excel_set(sheet, row_number, 13, export_detail_html_for_entry(entry))
-        excel_set(sheet, row_number, 14, "Y")
-        excel_set(sheet, row_number, 15, "01")
-        excel_set(sheet, row_number, 16, "N")
-        excel_set(sheet, row_number, 17, "01")
-        excel_set(sheet, row_number, 18, "01")
-        excel_set(sheet, row_number, 19, "108")
-        excel_set(sheet, row_number, 29, price)
+            put(row_number, index, image)
+        put(row_number, 13, export_detail_html_for_entry(entry))
+        put(row_number, 14, "Y")
+        put(row_number, 15, "01")
+        put(row_number, 16, "N")
+        put(row_number, 17, "01")
+        put(row_number, 18, "01")
+        put(row_number, 19, "108")
+        put(row_number, 29, price)
         if labels:
-            excel_set(sheet, row_number, 31, "01")
-            excel_set(sheet, row_number, 32, "|".join(labels))
-            excel_set(sheet, row_number, 33, "|".join(str(value) for value in option_prices))
-            excel_set(sheet, row_number, 34, "|".join(str(export_stock_quantity()) for _ in labels))
-            excel_set(sheet, row_number, 37, len(labels) * export_stock_quantity())
+            put(row_number, 31, "01")
+            put(row_number, 32, "|".join(labels))
+            put(row_number, 33, "|".join(str(value) for value in option_prices))
+            put(row_number, 34, "|".join(str(export_stock_quantity()) for _ in labels))
+            put(row_number, 37, len(labels) * export_stock_quantity())
         else:
-            excel_set(sheet, row_number, 37, export_stock_quantity())
+            put(row_number, 37, export_stock_quantity())
         if consumer_price:
-            excel_set(sheet, row_number, 41, consumer_price)
-        excel_set(sheet, row_number, 42, "홈런market")
-        excel_set(sheet, row_number, 43, "Y")
-        excel_set(sheet, row_number, 44, "01")
-        excel_set(sheet, row_number, 45, entry["gs"])
-        excel_set(sheet, row_number, 46, "02")
-        excel_set(sheet, row_number, 47, "1287")
-        excel_set(sheet, row_number, 50, "01|03\n02|03\n03|03\n04|05")
-        excel_set(sheet, row_number, 51, "01")
-        excel_set(sheet, row_number, 54, "891045")
-        excel_set(sheet, row_number, 55, "11800")
-        excel_set(sheet, row_number, 56, "상세페이지 참조")
-        excel_set(sheet, row_number, 57, "11905")
-        excel_set(sheet, row_number, 58, "상세페이지 참조")
-        excel_set(sheet, row_number, 59, "23760413")
-        excel_set(sheet, row_number, 60, "판매자 고객센터 문의")
-        excel_set(sheet, row_number, 61, "23759100")
-        excel_set(sheet, row_number, 62, "중국")
-        excel_set(sheet, row_number, 63, "23756033")
-        excel_set(sheet, row_number, 64, "해당사항 없음")
-        excel_set(sheet, row_number, 100, "01")
-        excel_set(sheet, row_number, 101, "01")
-        excel_set(sheet, row_number, 102, "00034")
-        excel_set(sheet, row_number, 103, "1228104")
-        excel_set(sheet, row_number, 105, "01")
-        excel_set(sheet, row_number, 106, 0)
-        excel_set(sheet, row_number, 108, "Y")
-        excel_set(sheet, row_number, 109, "03")
-        excel_set(sheet, row_number, 111, 3000)
-        excel_set(sheet, row_number, 112, "01")
-        excel_set(sheet, row_number, 113, 6000)
-        excel_set(sheet, row_number, 114, "상품 상세설명을 참고해 주세요.")
-        excel_set(sheet, row_number, 115, "상품 상세설명 및 판매자 반품/교환 정책을 참고해 주세요.")
+            put(row_number, 41, consumer_price)
+        put(row_number, 42, "홈런market")
+        put(row_number, 43, "Y")
+        put(row_number, 44, "01")
+        put(row_number, 45, entry["gs"])
+        put(row_number, 46, "02")
+        put(row_number, 47, "1287")
+        put(row_number, 50, "01|03\n02|03\n03|03\n04|05")
+        put(row_number, 51, "01")
+        put(row_number, 54, "891045")
+        put(row_number, 55, "11800")
+        put(row_number, 56, "상세페이지 참조")
+        put(row_number, 57, "11905")
+        put(row_number, 58, "상세페이지 참조")
+        put(row_number, 59, "23760413")
+        put(row_number, 60, "판매자 고객센터 문의")
+        put(row_number, 61, "23759100")
+        put(row_number, 62, "중국")
+        put(row_number, 63, "23756033")
+        put(row_number, 64, "해당사항 없음")
+        put(row_number, 100, "01")
+        put(row_number, 101, "01")
+        put(row_number, 102, "00034")
+        put(row_number, 103, "1228104")
+        put(row_number, 105, "01")
+        put(row_number, 106, 0)
+        put(row_number, 108, "Y")
+        put(row_number, 109, "03")
+        put(row_number, 111, 3000)
+        put(row_number, 112, "01")
+        put(row_number, 113, 6000)
+        put(row_number, 114, "상품 상세설명을 참고해 주세요.")
+        put(row_number, 115, "상품 상세설명 및 판매자 반품/교환 정책을 참고해 주세요.")
         row_number += 1
-    if sheet.max_row >= 5:
-        sheet.delete_rows(4, 2)
-    workbook.save(work_path)
-    final_path = convert_xlsx_to_xls_if_possible(work_path, xls_path)
-    return export_response_for_file(final_path, len(entries), final_path.suffix.lstrip(".").lower(), template="11st-official")
+    workbook.save(str(xls_path))
+    return export_response_for_file(xls_path, len(entries), "xls", template="11st-official")
 
 
 def write_esm_template_export(entries: list[dict]) -> dict:
