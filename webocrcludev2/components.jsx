@@ -4524,7 +4524,7 @@ const MARKET_CREDENTIALS = [
   { market: '네이버', mode: 'key', accept: '.json,.txt,.env', hint: 'Commerce API 키 파일' },
   { market: '쿠팡', mode: 'key', accept: '.json,.txt,.env', hint: 'WING access/secret 파일' },
   { market: '롯데ON', mode: 'key', accept: '.json,.txt,.env', hint: 'API 인증 파일' },
-  { market: '11번가', mode: 'template', accept: '.xlsx,.xls', hint: '11번가 업로드 엑셀 서식' },
+  { market: '11번가', mode: 'key', accept: '.txt,.json,.env', hint: 'Open API 키 파일' },
   { market: 'ESM', mode: 'template', accept: '.xlsx,.xls', hint: 'ESM 업로드 엑셀 서식' },
 ];
 

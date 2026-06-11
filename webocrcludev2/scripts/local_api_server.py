@@ -2428,6 +2428,26 @@ def test_cafe24_key(path: Path) -> tuple[bool, int | str, str]:
     return ok, status, "products 조회 OK" if ok else scrub_secret(body)
 
 
+def test_elevenst_key(path: Path) -> tuple[bool, int | str, str]:
+    key = parse_elevenst_key_file(path)
+    if not key:
+        return False, "CONFIG", "API 키 없음"
+    try:
+        request = urllib.request.Request(
+            "http://api.11st.co.kr/rest/cateservice/category/1001",
+            headers={"openapikey": key},
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            body = response.read().decode("euc-kr", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return False, exc.code, scrub_secret(exc.read().decode("euc-kr", errors="replace")[:160])
+    except Exception as exc:
+        return False, "LOCAL", str(exc)[:160]
+    if "AuthMessage" in body or "resultCode" in body:
+        return False, 200, scrub_secret(body[:160])
+    return True, 200, "카테고리 조회 OK"
+
+
 def test_naver_key(path: Path) -> tuple[bool, int | str, str]:
     cfg = read_secret_payload(path)
     client_id = pick_secret(cfg, "NAVER_COMMERCE_CLIENT_ID", "CLIENT_ID", "client_id")
@@ -2511,6 +2531,7 @@ def test_market_key(item: dict) -> dict:
         "네이버": test_naver_key,
         "쿠팡": test_coupang_key,
         "롯데ON": test_lotteon_key,
+        "11번가": test_elevenst_key,
     }
     tester = testers.get(market)
     if not tester:
@@ -7001,6 +7022,15 @@ def run_market_upload_job(job_id: str, payload: dict) -> None:
                 active_entries[active_key] = {**entry, "status": "running", "updatedAt": now_text()}
             update_job_progress(f"{entry['channel']} 11번가 API 실행")
             try:
+                # 마켓 키 설정에 등록된 계정별 11번가 키 우선 사용
+                elevenst_item = settings.get(market_key_id(entry.get("account", ""), "11번가"))
+                if isinstance(elevenst_item, dict):
+                    try:
+                        elevenst_key_path = resolve_market_key_item_path(elevenst_item)
+                        if elevenst_key_path is not None:
+                            entry["_elevenstApiKeyPath"] = str(elevenst_key_path)
+                    except Exception:
+                        pass
                 # 네이버/쿠팡과 동일하게 Cafe24 기준상품 이미지를 대표/추가로 사용
                 cafe24_path = resolve_cafe24_key_path_for_account(settings, entry.get("account", ""))
                 if cafe24_path is not None:
@@ -8069,13 +8099,34 @@ def resolve_cafe24_key_path_for_account(settings: dict, account: str) -> Path | 
     return None
 
 
-def load_elevenst_api_key() -> str:
+def parse_elevenst_key_file(path: Path) -> str:
+    """11번가 Open API 키 파일 파싱 — 단일 라인, KEY=값, JSON 모두 지원."""
+    try:
+        text = path.read_text(encoding="utf-8-sig", errors="replace").strip()
+    except Exception:
+        return ""
+    if text.startswith("{"):
+        cfg = read_secret_payload(path)
+        return pick_secret(cfg, "API_KEY", "OPENAPI_KEY", "OPENAPIKEY", "ELEVENST_API_KEY", "KEY")
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        return line.split("=", 1)[1].strip() if "=" in line else line
+    return ""
+
+
+def load_elevenst_api_key(key_path: object = None) -> str:
+    if key_path:
+        parsed = parse_elevenst_key_file(Path(str(key_path)))
+        if parsed:
+            return parsed
     env_key = (os.environ.get("ELEVENST_API_KEY") or "").strip()
     if env_key:
         return env_key
-    key_path = Path(os.path.expanduser("~")) / "Desktop" / "key" / "elevenst_api_key.txt"
-    if key_path.is_file():
-        return key_path.read_text(encoding="utf-8").strip()
+    default_path = Path(os.path.expanduser("~")) / "Desktop" / "key" / "elevenst_api_key.txt"
+    if default_path.is_file():
+        return parse_elevenst_key_file(default_path)
     return ""
 
 
@@ -8186,9 +8237,9 @@ def build_elevenst_product_xml(entry: dict) -> str:
 def upload_elevenst_product(entry: dict) -> dict:
     """11번가 상품등록 API 호출. 결과: {status, productId, error, rawStatus}."""
     result = {**entry, "status": "failed", "updatedAt": now_text(), "error": "", "productId": ""}
-    api_key = load_elevenst_api_key()
+    api_key = load_elevenst_api_key(entry.get("_elevenstApiKeyPath"))
     if not api_key:
-        result["error"] = "11번가 API 키가 없습니다 (Desktop/key/elevenst_api_key.txt)"
+        result["error"] = "11번가 API 키가 없습니다 (마켓 키 설정 또는 Desktop/key/elevenst_api_key.txt)"
         return result
     try:
         xml = build_elevenst_product_xml(entry)
