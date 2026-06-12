@@ -7079,23 +7079,36 @@ def run_market_upload_job(job_id: str, payload: dict) -> None:
                             entry["_elevenstApiKeyPath"] = str(elevenst_key_path)
                     except Exception:
                         pass
-                # 네이버/쿠팡과 동일하게 Cafe24 기준상품 이미지를 대표/추가로 사용
-                cafe24_path = resolve_cafe24_key_path_for_account(settings, entry.get("account", ""))
-                if cafe24_path is not None:
-                    try:
-                        images = get_cafe24_listing_images(
-                            cafe24_path, text_value(entry.get("gs")), text_value(entry.get("baseGs")),
-                        )
-                        if images:
-                            entry["_cafe24ListingImages"] = images
-                            log_lines.append(f"[{now_text()}] {entry['gs']} Cafe24 이미지 {len(images)}장 적용")
-                    except Exception as exc:
-                        log_lines.append(f"[{now_text()}] {entry['gs']} Cafe24 이미지 조회 실패: {str(exc)[:120]}")
+                # 이미지 우선순위: ① 네이버 등록 이미지 ② 쿠팡 등록 이미지 ③ Cafe24 기준상품(폴백)
+                try:
+                    shared_images = get_naver_uploaded_images(entry.get("gs", ""), entry.get("account", "A"))
+                    image_source = "네이버"
+                    if not shared_images:
+                        shared_images = get_coupang_uploaded_images(entry.get("gs", ""), entry.get("account", "A"))
+                        image_source = "쿠팡"
+                except Exception:
+                    shared_images = []
+                    image_source = ""
+                if shared_images:
+                    entry["_cafe24ListingImages"] = shared_images
+                    log_lines.append(f"[{now_text()}] {entry['gs']} {image_source} 등록 이미지 {len(shared_images)}장 공유")
+                else:
+                    cafe24_path = resolve_cafe24_key_path_for_account(settings, entry.get("account", ""))
+                    if cafe24_path is not None:
+                        try:
+                            images = get_cafe24_listing_images(
+                                cafe24_path, text_value(entry.get("gs")), text_value(entry.get("baseGs")),
+                            )
+                            if images:
+                                entry["_cafe24ListingImages"] = images
+                                log_lines.append(f"[{now_text()}] {entry['gs']} Cafe24 이미지 {len(images)}장 적용")
+                        except Exception as exc:
+                            log_lines.append(f"[{now_text()}] {entry['gs']} Cafe24 이미지 조회 실패: {str(exc)[:120]}")
                 if not entry.get("_cafe24ListingImages"):
-                    # 대표이미지에 상세컷이 들어가는 사고 방지: Cafe24 기준 이미지 없이는 등록하지 않음
+                    # 대표이미지에 상세컷이 들어가는 사고 방지: 검증된 이미지 없이는 등록하지 않음
                     return {
                         **entry, "status": "failed", "updatedAt": now_text(),
-                        "error": "Cafe24 기준상품 이미지를 가져오지 못했습니다 (토큰 만료 시 Cafe24 재인증 필요). 대표이미지 오등록 방지를 위해 중단.",
+                        "error": "네이버/쿠팡 등록 이미지·Cafe24 기준 이미지를 모두 찾지 못했습니다. 네이버 또는 쿠팡에 먼저 업로드하세요.",
                     }
                 result = upload_elevenst_product(entry)
             finally:
@@ -8134,6 +8147,146 @@ def get_cafe24_listing_images(cafe24_path: Path, gs: str, base_gs: str = "") -> 
                 add(item.get("big") or item.get("medium") or item.get("small"))
             else:
                 add(item)
+    return urls
+
+
+NAVER_IMAGE_CLIENT_CACHE: dict[str, object] = {}
+
+
+def get_naver_uploaded_images(gs: str, account: str = "A") -> list[str]:
+    """같은 GS의 네이버 등록 상품에서 대표/추가 이미지 URL을 가져온다 (마켓 간 이미지 공유)."""
+    gs_upper = text_value(gs).upper()
+    if not gs_upper:
+        return []
+    channel = f"{account or 'A'}:네이버"
+    product_id = ""
+    for item in collect_upload_history(limit_jobs=200):
+        if item.get("channelKey") == channel and item.get("gs") == gs_upper and item.get("status") == "uploaded" and item.get("productId"):
+            product_id = item["productId"]
+            break
+    if not product_id:
+        return []
+    try:
+        from cleanup_market_duplicates import NaverClient
+    except Exception:
+        return []
+    key_files = {"A": "naver_client_key.txt", "B": "naver_key_junbi.txt"}
+    key_path = Path(os.path.expanduser("~")) / "Desktop" / "key" / key_files.get(account or "A", key_files["A"])
+    if not key_path.is_file():
+        return []
+    cache_key = f"{account}:{key_path}"
+    client = NAVER_IMAGE_CLIENT_CACHE.get(cache_key)
+    if client is None:
+        try:
+            client = NaverClient(key_path)
+        except Exception:
+            return []
+        NAVER_IMAGE_CLIENT_CACHE[cache_key] = client
+    parsed = None
+    try:
+        # 업로드 이력의 productId는 채널상품번호 — 채널상품 조회가 정답이고, 원상품 조회는 폴백
+        status, _text, channel_parsed = client.request("GET", f"/v2/products/channel-products/{product_id}")
+        if 200 <= status < 300 and isinstance(channel_parsed, dict):
+            parsed = channel_parsed
+        else:
+            ok, _status, _text2, origin_parsed = client.get_origin_product(product_id)
+            if ok and isinstance(origin_parsed, dict):
+                parsed = origin_parsed
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    origin = parsed.get("originProduct") if isinstance(parsed.get("originProduct"), dict) else parsed
+    images = origin.get("images") if isinstance(origin.get("images"), dict) else {}
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: object) -> None:
+        url = elevenst_image_url(value)
+        if url and url.lower() not in seen:
+            seen.add(url.lower())
+            urls.append(url)
+
+    representative = images.get("representativeImage")
+    if isinstance(representative, dict):
+        add(representative.get("url"))
+    optional = images.get("optionalImages")
+    if isinstance(optional, list):
+        for image in optional:
+            if isinstance(image, dict):
+                add(image.get("url"))
+            else:
+                add(image)
+    return urls
+
+
+COUPANG_IMAGE_CLIENT_CACHE: dict[str, object] = {}
+
+
+def get_coupang_uploaded_images(gs: str, account: str = "A") -> list[str]:
+    """같은 GS의 쿠팡 등록 상품에서 이미지 URL을 가져온다 (마켓 간 이미지 공유 폴백)."""
+    gs_upper = text_value(gs).upper()
+    if not gs_upper:
+        return []
+    channel = f"{account or 'A'}:쿠팡"
+    product_id = ""
+    for item in collect_upload_history(limit_jobs=200):
+        if item.get("channelKey") == channel and item.get("gs") == gs_upper and item.get("status") == "uploaded" and item.get("productId"):
+            product_id = item["productId"]
+            break
+    if not product_id:
+        return []
+    try:
+        from cleanup_market_duplicates import CoupangClient
+    except Exception:
+        return []
+    key_files = {"A": "coupang_wing_api.txt", "B": "coupang_api_junbi.txt"}
+    key_path = Path(os.path.expanduser("~")) / "Desktop" / "key" / key_files.get(account or "A", key_files["A"])
+    if not key_path.is_file():
+        return []
+    cache_key = f"{account}:{key_path}"
+    client = COUPANG_IMAGE_CLIENT_CACHE.get(cache_key)
+    if client is None:
+        try:
+            client = CoupangClient(key_path)
+        except Exception:
+            return []
+        COUPANG_IMAGE_CLIENT_CACHE[cache_key] = client
+    try:
+        ok, _status, _text, parsed = client.get_product(product_id)
+    except Exception:
+        return []
+    if not ok or not isinstance(parsed, dict):
+        return []
+    data = parsed.get("data") if isinstance(parsed.get("data"), dict) else parsed
+    items = data.get("items") if isinstance(data.get("items"), list) else []
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: object) -> None:
+        url = elevenst_image_url(value)
+        if url and url.lower() not in seen:
+            seen.add(url.lower())
+            urls.append(url)
+
+    for product_item in items[:1]:  # 첫 아이템(대표 옵션) 이미지 사용
+        images = product_item.get("images") if isinstance(product_item, dict) else None
+        if not isinstance(images, list):
+            continue
+        for image in sorted(images, key=lambda im: im.get("imageOrder", 0) if isinstance(im, dict) else 0):
+            if not isinstance(image, dict):
+                continue
+            # 상세컷 혼입 방지: 대표(REPRESENTATION) 이미지만 신뢰
+            if text_value(image.get("imageType")).upper() != "REPRESENTATION":
+                continue
+            cdn_path = text_value(image.get("cdnPath"))
+            vendor_path = text_value(image.get("vendorPath"))
+            if cdn_path.startswith("http"):
+                add(cdn_path)
+            elif cdn_path:
+                add(f"https://image1.coupangcdn.com/image/{cdn_path.lstrip('/')}")
+            elif vendor_path.startswith("http"):
+                add(vendor_path)
     return urls
 
 
