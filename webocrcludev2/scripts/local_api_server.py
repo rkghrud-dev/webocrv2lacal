@@ -8099,6 +8099,102 @@ def resolve_cafe24_key_path_for_account(settings: dict, account: str) -> Path | 
     return None
 
 
+def delete_market_products(items: list[dict]) -> dict:
+    """선택 상품을 마켓 API로 실제 삭제하고, 성공분은 delete report에 기록해 재업로드를 허용한다.
+
+    - 쿠팡: 옵션(vendorItem) 판매중지 후 상품 삭제 (cleanup_market_duplicates 클라이언트 재사용)
+    - 네이버: 원상품(origin-product) 삭제
+    - 롯데ON/11번가: 마켓 삭제 API 미연동 — 이력만 해제하고 수동 삭제 안내
+    """
+    try:
+        from cleanup_market_duplicates import CoupangClient, NaverClient
+    except Exception as exc:
+        return {"ok": False, "error": f"삭제 클라이언트 로드 실패: {exc}", "results": []}
+
+    key_root = Path(os.path.expanduser("~")) / "Desktop" / "key"
+    coupang_key_files = {"A": "coupang_wing_api.txt", "B": "coupang_api_junbi.txt"}
+    naver_key_files = {"A": "naver_client_key.txt", "B": "naver_key_junbi.txt"}
+    clients: dict[str, object] = {}
+
+    def coupang_client(account: str):
+        cache_key = f"coupang:{account}"
+        if cache_key not in clients:
+            key_file = key_root / coupang_key_files.get(account or "A", coupang_key_files["A"])
+            clients[cache_key] = CoupangClient(key_file) if key_file.is_file() else None
+        return clients[cache_key]
+
+    def naver_client(account: str):
+        cache_key = f"naver:{account}"
+        if cache_key not in clients:
+            key_file = key_root / naver_key_files.get(account or "A", naver_key_files["A"])
+            clients[cache_key] = NaverClient(key_file) if key_file.is_file() else None
+        return clients[cache_key]
+
+    results: list[dict] = []
+    report_rows: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        market = text_value(item.get("market"))
+        product_id = text_value(item.get("productId"))
+        gs = text_value(item.get("gs"))
+        account = text_value(item.get("account")) or text_value(item.get("channel")).split(":")[0]
+        entry = {"market": market, "productId": product_id, "gs": gs, "channel": text_value(item.get("channel"))}
+        if not market or not product_id:
+            results.append({**entry, "ok": False, "message": "market/productId 누락"})
+            continue
+        ok = False
+        message = ""
+        try:
+            if market == "쿠팡":
+                client = coupang_client(account)
+                if client is None:
+                    message = "쿠팡 키 파일 없음"
+                else:
+                    got, status, _text, parsed = client.get_product(product_id)
+                    from cleanup_market_duplicates import is_coupang_deleted_status, recursive_vendor_item_ids
+                    if got and is_coupang_deleted_status(parsed):
+                        ok, message = True, "이미 삭제된 상품"
+                    elif not got and status == 404:
+                        ok, message = True, "상품 없음(이미 삭제)"
+                    else:
+                        for vendor_id in recursive_vendor_item_ids(parsed):
+                            client.stop_vendor_item(vendor_id)
+                            time.sleep(0.12)
+                        ok, status, body = client.delete_product(product_id)
+                        message = f"삭제 응답 {status}" if ok else scrub_secret(body, 160)
+            elif market == "네이버":
+                client = naver_client(account)
+                if client is None:
+                    message = "네이버 키 파일 없음"
+                else:
+                    ok, status, body = client.delete_origin_product(product_id)
+                    if not ok and status == 404:
+                        ok, message = True, "상품 없음(이미 삭제)"
+                    else:
+                        message = f"삭제 응답 {status}" if ok else scrub_secret(body, 160)
+            elif market in {"롯데ON", "11번가"}:
+                ok = True
+                message = f"{market} 삭제 API 미연동 — 이력만 해제 (마켓에서 직접 삭제 필요)"
+            else:
+                message = f"{market}은 삭제 대상이 아닙니다"
+        except Exception as exc:
+            message = str(exc)[:200]
+        results.append({**entry, "ok": ok, "message": message})
+        if ok:
+            report_rows.append({
+                **entry,
+                "deleteOk": "true",
+                "deletedAt": now_text(),
+                "reason": f"UI 삭제: {message}",
+            })
+
+    if report_rows:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        write_json(JOBS_ROOT / f"manual_{stamp}_delete_report.json", report_rows)
+    return {"ok": True, "results": results}
+
+
 def parse_elevenst_key_file(path: Path) -> str:
     """11번가 Open API 키 파일 파싱 — 단일 라인, KEY=값, JSON 모두 지원."""
     try:
@@ -9273,6 +9369,11 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
                     notes=category_text(payload.get("notes")),
                 )
                 self.send_json({"ok": True, "rule": rule})
+                return
+            if path == "/api/market-upload/delete-products":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                items = payload.get("items") if isinstance(payload.get("items"), list) else []
+                self.send_json(delete_market_products(items))
                 return
             if path == "/api/market-upload/mark-deleted":
                 payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")

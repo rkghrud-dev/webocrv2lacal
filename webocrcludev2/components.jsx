@@ -1024,7 +1024,7 @@ function MenuItem({ icon, label, kbd, onClick, active }) {
 function MenuSection({ children }) { return <div className="menu-section">{children}</div>; }
 
 /* ── top bar ──────────────────────────────────────────────── */
-function TopBar({ source, onImport, onReset, onSettings }) {
+function TopBar({ source, onImport, onReset, onSettings, onHistory }) {
   const [q, setQ] = useState('');
   const ref = useRef(null);
   useEffect(() => {
@@ -1050,6 +1050,7 @@ function TopBar({ source, onImport, onReset, onSettings }) {
         <kbd>/</kbd>
       </div>
       <div className="topbar-actions">
+        <GhostBtn icon={<IconFile size={16}/>} onClick={onHistory} title="지금까지 업로드한 내역을 봅니다">업로드 이력</GhostBtn>
         <GhostBtn icon={<IconClose size={16}/>} onClick={onReset} title="현재까지 진행과정을 초기화합니다">진행 초기화</GhostBtn>
         <AuroraBtn icon={<IconUpload size={16}/>} onClick={onImport}>원본 import</AuroraBtn>
         <IconBtn icon={<IconSettings size={18}/>} label="설정" onClick={onSettings}/>
@@ -3323,8 +3324,9 @@ function MarketUploadWorkbench({
       cafe24Url: entry?.cafe24Url || row?.cafe24Url || `https://mall.cafe24.com/${row?.gs || ''}`,
     };
   };
+  const isUploadedCell = (row, channel) => isUploadedHistory(historyFor(row, channel));
   const isAvailable = (row, channel) => {
-    if (isUploadedHistory(historyFor(row, channel))) return false;
+    if (isUploadedCell(row, channel)) return true; // 완료 셀도 선택 가능 (해제/삭제용)
     if (queuedItemMap.has(getCellKey(row, channel))) return true;
     const variant = getSavedVariant(row, channel);
     return Boolean(variant.title && variant.searchTerms);
@@ -3342,14 +3344,20 @@ function MarketUploadWorkbench({
     .map((channel) => getCellKey(row, channel)));
   const allSelected = availableKeys.length > 0 && availableKeys.every((key) => uploadSelection.has(key));
   const selectedCount = availableKeys.filter((key) => uploadSelection.has(key)).length;
+  const uploadedSelectedKeySet = new Set(
+    uploadRows.flatMap((row) => scopedChannels
+      .filter((channel) => uploadSelection.has(getCellKey(row, channel)) && isUploadedCell(row, channel))
+      .map((channel) => getCellKey(row, channel)))
+  );
   const excelSelectedCount = availableKeys.filter((key) => {
     const channel = scopedChannels.find((item) => key.startsWith(`${item.key}:`));
-    return uploadSelection.has(key) && ['11번가', 'ESM'].includes(channel?.market);
+    return uploadSelection.has(key) && !uploadedSelectedKeySet.has(key) && channel?.market === 'ESM';
   }).length;
   const apiSelectedCount = availableKeys.filter((key) => {
     const channel = scopedChannels.find((item) => key.startsWith(`${item.key}:`));
-    return uploadSelection.has(key) && channel?.market !== 'ESM';
+    return uploadSelection.has(key) && !uploadedSelectedKeySet.has(key) && channel?.market !== 'ESM';
   }).length;
+  const uploadedSelectedCount = uploadedSelectedKeySet.size;
 
   const toggleUpload = (key) => {
     setUploadSelection((prev) => {
@@ -3380,9 +3388,66 @@ function MarketUploadWorkbench({
     return uploadRows.flatMap((row) => scopedChannels.map((channel) => {
       const key = getCellKey(row, channel);
       if (!uploadSelection.has(key) || !isAvailable(row, channel) || !filterFn(channel)) return null;
+      if (isUploadedCell(row, channel)) return null; // 이미 등록된 셀은 업로드 대상에서 제외
       const variant = getSavedVariant(row, channel);
       return { key, row, channel, variant };
     }).filter(Boolean));
+  };
+  const selectedUploadedItems = () => uploadRows.flatMap((row) => scopedChannels.map((channel) => {
+    const key = getCellKey(row, channel);
+    if (!uploadSelection.has(key) || !isUploadedCell(row, channel)) return null;
+    const item = historyFor(row, channel);
+    return {
+      key,
+      market: channel.market,
+      channel: channel.key,
+      account: channel.account,
+      gs: row.gs,
+      productId: item?.productId || item?.sellerProductId || item?.spdNo || '',
+    };
+  }).filter(Boolean));
+  const releaseSelectedUploaded = async () => {
+    const items = selectedUploadedItems().filter((it) => it.productId);
+    if (!items.length) { window.alert('해제할 등록 상품이 선택되지 않았습니다.'); return; }
+    if (!window.confirm(`${items.length}건의 업로드 이력을 해제하고 재업로드를 허용합니다. (마켓의 상품은 그대로 남습니다)`)) return;
+    try {
+      const response = await fetch('/api/market-upload/mark-deleted', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ items }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result?.ok) throw new Error(result?.error || `release ${response.status}`);
+      onUploadHistoryChange?.(items.map((it) => ({
+        channelKey: it.channel, account: it.account, market: it.market, gs: it.gs, productId: it.productId,
+      })), 'deleted');
+    } catch (error) {
+      window.alert(`해제 실패: ${error.message}`);
+    }
+  };
+  const deleteSelectedUploaded = async () => {
+    const items = selectedUploadedItems().filter((it) => it.productId);
+    if (!items.length) { window.alert('삭제할 등록 상품이 선택되지 않았습니다.'); return; }
+    if (!window.confirm(`${items.length}건을 마켓 API로 실제 삭제합니다 (네이버/쿠팡 즉시 삭제, 롯데ON/11번가는 이력 해제 후 수동 삭제 안내). 계속할까요?`)) return;
+    try {
+      const response = await fetch('/api/market-upload/delete-products', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ items }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result?.ok) throw new Error(result?.error || `delete ${response.status}`);
+      const done = (result.results || []).filter((r) => r.ok);
+      const failed = (result.results || []).filter((r) => !r.ok);
+      onUploadHistoryChange?.(done.map((r) => ({
+        channelKey: r.channel, account: (r.channel || '').split(':')[0] || '', market: r.market, gs: r.gs, productId: r.productId,
+      })), 'deleted');
+      const lines = [`삭제 처리 완료: ${done.length}건`];
+      if (failed.length) lines.push(`실패 ${failed.length}건:\n` + failed.map((r) => `- ${r.market} ${r.gs}: ${r.message}`).join('\n'));
+      const manual = done.filter((r) => (r.message || '').includes('미연동'));
+      if (manual.length) lines.push(`※ ${manual.map((r) => r.market).filter((v, i, a) => a.indexOf(v) === i).join('/')}은 마켓에서 직접 삭제가 필요합니다 (이력은 해제됨).`);
+      window.alert(lines.join('\n\n'));
+    } catch (error) {
+      window.alert(`삭제 실패: ${error.message}`);
+    }
   };
   const uploadStatusLabel = (status, available) => {
     if (status === 'running') return '서버처리';
@@ -3903,8 +3968,9 @@ function MarketUploadWorkbench({
             </label>
             <GhostBtn onClick={() => setUploadSelection(new Set())}>전체 해제</GhostBtn>
             <GhostBtn onClick={() => setUploadSelection(new Set(availableKeys))}>전체 선택</GhostBtn>
-            <GhostBtn icon={<IconFile size={16}/>} onClick={() => downloadExcelData('11번가')} disabled={!buildSelectedEntries((channel) => channel.market === '11번가').length}>11번가 엑셀 저장</GhostBtn>
             <GhostBtn icon={<IconFile size={16}/>} onClick={() => downloadExcelData('ESM')} disabled={!buildSelectedEntries((channel) => channel.market === 'ESM').length}>ESM 엑셀 저장</GhostBtn>
+            <GhostBtn onClick={releaseSelectedUploaded} disabled={!uploadedSelectedCount || uploadBusy}>등록상품 해제 ({uploadedSelectedCount})</GhostBtn>
+            <GhostBtn onClick={deleteSelectedUploaded} disabled={!uploadedSelectedCount || uploadBusy}>선택 상품 API 삭제 ({uploadedSelectedCount})</GhostBtn>
             {uploadBusy && currentUploadJobId && (
               <GhostBtn icon={<IconClose size={16}/>} onClick={stopApiUpload}>업로드 중단</GhostBtn>
             )}
@@ -4586,6 +4652,140 @@ function SettingDropCell({ account, item, value, status, onFile }) {
   );
 }
 
+function UploadHistoryModal({ onClose }) {
+  const [items, setItems] = useState([]);
+  const [busy, setBusy] = useState(true);
+  const [error, setError] = useState('');
+  const [filterMarket, setFilterMarket] = useState('전체');
+  const [filterStatus, setFilterStatus] = useState('전체');
+  const [query, setQuery] = useState('');
+  const [selected, setSelected] = useState(null);
+
+  const load = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      const response = await fetch('/api/upload-history');
+      const result = await response.json();
+      if (!response.ok || !result?.ok) throw new Error(result?.error || `history ${response.status}`);
+      const sorted = (result.items || []).slice().sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+      setItems(sorted);
+    } catch (err) {
+      setError(String(err.message || err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const markets = ['전체', '네이버', '쿠팡', '롯데ON', '11번가', 'ESM'];
+  const statuses = ['전체', 'uploaded', 'failed', 'skipped'];
+  const statusLabel = (status) => ({ uploaded: '완료', failed: '실패', skipped: '제외', running: '진행', deleted: '삭제됨' }[status] || status || '-');
+  const filtered = items.filter((item) => {
+    const market = String(item.market || (item.channelKey || '').split(':')[1] || '');
+    if (filterMarket !== '전체' && market !== filterMarket) return false;
+    if (filterStatus !== '전체' && String(item.status) !== filterStatus) return false;
+    if (query) {
+      const haystack = `${item.gs || ''} ${item.sourceName || ''} ${item.title || ''} ${item.productId || ''}`.toLowerCase();
+      if (!haystack.includes(query.toLowerCase())) return false;
+    }
+    return true;
+  });
+  const summary = {
+    total: filtered.length,
+    uploaded: filtered.filter((i) => i.status === 'uploaded').length,
+    failed: filtered.filter((i) => i.status === 'failed').length,
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal-card" style={{width: 'min(1180px, 94vw)', maxHeight: '88vh', display: 'flex', flexDirection: 'column'}} onClick={(e) => e.stopPropagation()}>
+        <div className="upload-head" style={{padding: '14px 18px 8px'}}>
+          <div>
+            <span className="t-eyebrow">HISTORY · MARKET_UPLOADS</span>
+            <h3>업로드 이력</h3>
+          </div>
+          <div className="upload-actions">
+            <GhostBtn onClick={load} disabled={busy}>새로고침</GhostBtn>
+            <GhostBtn onClick={onClose}>닫기</GhostBtn>
+          </div>
+        </div>
+        <div style={{display: 'flex', gap: 8, alignItems: 'center', padding: '0 18px 10px', flexWrap: 'wrap'}}>
+          <select value={filterMarket} onChange={(e) => setFilterMarket(e.target.value)}>
+            {markets.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
+            {statuses.map((s) => <option key={s} value={s}>{s === '전체' ? '전체 상태' : statusLabel(s)}</option>)}
+          </select>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="GS코드 · 상품명 · 상품번호 검색"
+            style={{flex: '1 1 220px', minWidth: 180}}/>
+          <small style={{opacity: 0.75}}>총 {summary.total}건 · 완료 {summary.uploaded} · 실패 {summary.failed}</small>
+        </div>
+        <div style={{display: 'flex', gap: 12, padding: '0 18px 16px', minHeight: 0, flex: 1}}>
+          <div style={{flex: selected ? '1 1 58%' : '1 1 100%', overflow: 'auto', border: '1px solid var(--line, #e3e6ef)', borderRadius: 10}}>
+            {busy && <div style={{padding: 16}}>불러오는 중…</div>}
+            {error && <div style={{padding: 16, color: '#c0392b'}}>{error}</div>}
+            {!busy && !error && (
+              <table style={{width: '100%', borderCollapse: 'collapse', fontSize: 13}}>
+                <thead>
+                  <tr style={{position: 'sticky', top: 0, background: 'var(--surface, #fff)', textAlign: 'left'}}>
+                    <th style={{padding: '8px 10px'}}>시간</th>
+                    <th style={{padding: '8px 10px'}}>채널</th>
+                    <th style={{padding: '8px 10px'}}>GS코드</th>
+                    <th style={{padding: '8px 10px'}}>상품명</th>
+                    <th style={{padding: '8px 10px'}}>상태</th>
+                    <th style={{padding: '8px 10px'}}>상품번호</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((item) => (
+                    <tr
+                      key={item.historyKey || `${item.channelKey}:${item.gs}`}
+                      onClick={() => setSelected(item)}
+                      style={{cursor: 'pointer', background: selected === item ? 'rgba(90,110,255,0.08)' : 'transparent', borderTop: '1px solid var(--line, #eef0f6)'}}>
+                      <td style={{padding: '7px 10px', whiteSpace: 'nowrap'}} className="mono">{String(item.updatedAt || '').slice(0, 16)}</td>
+                      <td style={{padding: '7px 10px', whiteSpace: 'nowrap'}}>{item.channelKey}</td>
+                      <td style={{padding: '7px 10px'}} className="mono">{item.gs}</td>
+                      <td style={{padding: '7px 10px', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap'}}>{item.title || item.sourceName || '-'}</td>
+                      <td style={{padding: '7px 10px'}}><Pill status={item.status}>{statusLabel(item.status)}</Pill></td>
+                      <td style={{padding: '7px 10px'}} className="mono">{item.productId || '-'}</td>
+                    </tr>
+                  ))}
+                  {!filtered.length && (
+                    <tr><td colSpan="6" style={{padding: 16, textAlign: 'center', opacity: 0.6}}>이력이 없습니다</td></tr>
+                  )}
+                </tbody>
+              </table>
+            )}
+          </div>
+          {selected && (
+            <div style={{flex: '1 1 42%', overflow: 'auto', border: '1px solid var(--line, #e3e6ef)', borderRadius: 10, padding: 14}}>
+              <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8}}>
+                <strong>{selected.channelKey} · {selected.gs}</strong>
+                <button type="button" onClick={() => setSelected(null)}>닫기</button>
+              </div>
+              <dl style={{display: 'grid', gridTemplateColumns: '90px 1fr', rowGap: 6, columnGap: 8, fontSize: 13, margin: 0}}>
+                <dt style={{opacity: 0.6}}>상태</dt><dd style={{margin: 0}}><Pill status={selected.status}>{statusLabel(selected.status)}</Pill></dd>
+                <dt style={{opacity: 0.6}}>시간</dt><dd style={{margin: 0}} className="mono">{selected.updatedAt || '-'}</dd>
+                <dt style={{opacity: 0.6}}>상품번호</dt><dd style={{margin: 0}} className="mono">{selected.productId || '-'}</dd>
+                <dt style={{opacity: 0.6}}>원본명</dt><dd style={{margin: 0}}>{selected.sourceName || '-'}</dd>
+                <dt style={{opacity: 0.6}}>업로드명</dt><dd style={{margin: 0}}>{selected.title || '-'}</dd>
+                <dt style={{opacity: 0.6}}>검색어</dt><dd style={{margin: 0, wordBreak: 'break-all'}}>{selected.searchTerms || '-'}</dd>
+                <dt style={{opacity: 0.6}}>Job</dt><dd style={{margin: 0}} className="mono">{selected.jobId || '-'}</dd>
+                {selected.error && (<React.Fragment><dt style={{opacity: 0.6}}>오류</dt><dd style={{margin: 0, color: '#c0392b', wordBreak: 'break-all'}}>{selected.error}</dd></React.Fragment>)}
+                {selected.workbookPath && (<React.Fragment><dt style={{opacity: 0.6}}>워크북</dt><dd style={{margin: 0, wordBreak: 'break-all'}} className="mono">{selected.workbookPath}</dd></React.Fragment>)}
+              </dl>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SettingsModal({ onClose }) {
   const [files, setFiles] = useState({});
   const [statuses, setStatuses] = useState({});
@@ -4955,6 +5155,6 @@ Object.assign(window, {
   AuroraBtn, VioletBtn, GhostBtn, IconBtn,
   Pill, Menu, MenuItem, MenuSection,
   ProductThumb,
-  TopBar, Sidebar, DropZone, ImportPreview, ProductMatrix, UploadResultTable, AccountSummary, DetailModal, ViewSwitch, WorkflowActionPanel, KeywordOptionsModal, KeywordWorkbench, MarketUploadWorkbench, SettingsModal, DesignGallery,
+  TopBar, Sidebar, DropZone, ImportPreview, ProductMatrix, UploadResultTable, AccountSummary, DetailModal, ViewSwitch, WorkflowActionPanel, KeywordOptionsModal, KeywordWorkbench, MarketUploadWorkbench, SettingsModal, UploadHistoryModal, DesignGallery,
   MarketIcon, MARKET_BRAND, MARKETS, SELLING_MARKETS, STATUS_LABEL,
 });

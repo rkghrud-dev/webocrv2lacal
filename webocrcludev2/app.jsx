@@ -798,6 +798,7 @@ function App() {
   const [selectedGs, setSelectedGs] = useState(new Set());
   const [lastCheckedGs, setLastCheckedGs] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [keywordOptionsOpen, setKeywordOptionsOpen] = useState(false);
   const [keywordOptions, setKeywordOptions] = useState(() => {
     try {
@@ -1877,7 +1878,8 @@ function App() {
         source={source?.name}
         onImport={onImportClick}
         onReset={resetWorkspace}
-        onSettings={() => setSettingsOpen(true)}/>
+        onSettings={() => setSettingsOpen(true)}
+        onHistory={() => setHistoryOpen(true)}/>
       <div className="body">
         <Sidebar
           source={source}
@@ -2445,6 +2447,10 @@ function App() {
 
       {settingsOpen && (
         <SettingsModal onClose={() => setSettingsOpen(false)}/>
+      )}
+
+      {historyOpen && (
+        <UploadHistoryModal onClose={() => setHistoryOpen(false)}/>
       )}
 
       {keywordOptionsOpen && (
