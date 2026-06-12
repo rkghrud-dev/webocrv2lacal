@@ -2351,6 +2351,50 @@ def set_secret_alias(raw: dict, aliases: list[str], value: str) -> None:
     raw[aliases[0]] = value
 
 
+def sync_cafe24_token_copies(mall_id: str, access_token: str, refresh_token: str, source_path: Path) -> None:
+    """같은 몰의 Cafe24 토큰 사본들에 갱신된 토큰을 동기화한다.
+
+    Cafe24는 갱신 시 이전 refresh_token을 무효화하므로, 사본이 여러 개면
+    한 곳의 갱신이 나머지를 전부 죽인다. 알려진 위치를 모두 맞춰준다.
+    """
+    if not mall_id or not access_token:
+        return
+    candidate_dirs = [
+        Path(os.path.expanduser("~")) / "Desktop" / "key",
+        Path(os.path.expanduser("~")) / "Desktop" / "key" / "마켓별_키정리" / "02_카페24",
+        PROJECT_ROOT / "key" / "홈런" / "Cafe24",
+    ]
+    candidates: list[Path] = []
+    for directory in candidate_dirs:
+        if directory.is_dir():
+            candidates.extend(directory.glob("cafe24_token*.json"))
+    if MARKET_KEY_ROOT.is_dir():
+        candidates.extend(MARKET_KEY_ROOT.glob("*/Cafe24/cafe24_token*.json"))
+    for candidate in candidates:
+        try:
+            if candidate.resolve() == source_path.resolve():
+                continue
+        except Exception:
+            pass
+        try:
+            raw = json.loads(candidate.read_text(encoding="utf-8-sig", errors="replace"))
+        except Exception:
+            continue
+        if not isinstance(raw, dict):
+            continue
+        candidate_mall = text_value(raw.get("MallId") or raw.get("MALL_ID") or raw.get("mall_id"))
+        if candidate_mall != mall_id:
+            continue
+        try:
+            set_secret_alias(raw, ["AccessToken", "ACCESS_TOKEN", "access_token"], access_token)
+            if refresh_token:
+                set_secret_alias(raw, ["RefreshToken", "REFRESH_TOKEN", "refresh_token"], refresh_token)
+            set_secret_alias(raw, ["UpdatedAt", "UPDATED_AT", "updated_at"], now_text())
+            candidate.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            continue
+
+
 def refresh_cafe24_access_token(path: Path, cfg: dict[str, str], mall_id: str) -> tuple[bool, str]:
     refresh_token = pick_secret(cfg, "REFRESH_TOKEN", "refresh_token", "refreshToken")
     client_id = pick_secret(cfg, "CLIENT_ID", "client_id", "clientId")
@@ -2386,6 +2430,10 @@ def refresh_cafe24_access_token(path: Path, cfg: dict[str, str], mall_id: str) -
             path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         return True, access_token
+    try:
+        sync_cafe24_token_copies(mall_id, access_token, text_value(token_payload.get("refresh_token")), path)
+    except Exception:
+        pass
     return True, access_token
 
 
