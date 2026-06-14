@@ -4116,7 +4116,56 @@ def enrich_seed_products_with_naver_shopping(seed_payload: dict, selected_gs: li
     return changed
 
 
+KEYWORD_PROFILE_USER_PATH = DATA_ROOT / "config" / "keyword_profile.md"
+KEYWORD_PROFILE_DEFAULT_PATH = ROOT / "config" / "keyword_profile_default.md"
+
+KEYWORD_IMAGE_BLOCK = """
+이미지 분석 (중요):
+- 이 요청에는 상품 상세페이지 이미지가 첨부되어 있다.
+- 첨부된 이미지를 직접 보고 OCR 및 시각 분석을 수행한다.
+- 이미지에서 파악한 상품 특성(소재, 규격, 브랜드, 용도, 기능, 구성품 등)을 키워드 생성에 적극 반영한다.
+- 이미지 OCR로 읽은 텍스트가 입력 JSON의 ocrAnalysis.rawText보다 정확하면 이미지 기반 정보를 우선한다.
+"""
+
+
+def load_keyword_profile_template() -> str | None:
+    """키워드 프로파일 본문 로드: 사용자 오버라이드 → 배포 기본 순. 둘 다 없으면 None(내장 폴백 사용)."""
+    for path in (KEYWORD_PROFILE_USER_PATH, KEYWORD_PROFILE_DEFAULT_PATH):
+        try:
+            if path.is_file():
+                text = path.read_text(encoding="utf-8").strip()
+                if text:
+                    return text
+        except Exception:
+            continue
+    return None
+
+
+def get_keyword_profile_status() -> dict:
+    """현재 사용 중인 키워드 프로파일 출처/경로 정보."""
+    if KEYWORD_PROFILE_USER_PATH.is_file():
+        return {"source": "user", "path": str(KEYWORD_PROFILE_USER_PATH), "exists": True}
+    if KEYWORD_PROFILE_DEFAULT_PATH.is_file():
+        return {"source": "default", "path": str(KEYWORD_PROFILE_DEFAULT_PATH), "exists": True}
+    return {"source": "fallback", "path": "", "exists": False}
+
+
 def build_keyword_prompt(input_file: str, output_file: str, has_images: bool = False) -> str:
+    template = load_keyword_profile_template()
+    if template is None:
+        # 프로파일 파일이 모두 없을 때만 코드 내장 버전 사용
+        return _build_keyword_prompt_legacy(input_file, output_file, has_images)
+    image_block = KEYWORD_IMAGE_BLOCK if has_images else ""
+    prompt = (
+        template
+        .replace("__IMAGE_BLOCK__", image_block)
+        .replace("__INPUT_FILE__", input_file)
+        .replace("__OUTPUT_FILE__", output_file)
+    )
+    return prompt.strip()
+
+
+def _build_keyword_prompt_legacy(input_file: str, output_file: str, has_images: bool = False) -> str:
     image_block = ""
     if has_images:
         image_block = """
@@ -9416,6 +9465,27 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
         if path == "/api/upload-history":
             self.send_json({"ok": True, "items": collect_upload_history()})
             return
+        if path == "/api/keyword-profile":
+            # 현재 키워드 프로파일 본문 + 출처 반환 (사용자 오버라이드 → 기본 → 폴백)
+            status = get_keyword_profile_status()
+            template = load_keyword_profile_template()
+            if template is None:
+                template = _build_keyword_prompt_legacy("__INPUT_FILE__", "__OUTPUT_FILE__", False)
+            default_text = ""
+            if KEYWORD_PROFILE_DEFAULT_PATH.is_file():
+                try:
+                    default_text = KEYWORD_PROFILE_DEFAULT_PATH.read_text(encoding="utf-8")
+                except Exception:
+                    default_text = ""
+            self.send_json({
+                "ok": True,
+                "source": status["source"],
+                "path": status["path"],
+                "hasUserOverride": KEYWORD_PROFILE_USER_PATH.is_file(),
+                "content": template,
+                "defaultContent": default_text,
+            })
+            return
         if path == "/api/categories":
             params = parse_qs(parsed.query)
             market = (params.get("market") or [""])[0]
@@ -9601,6 +9671,25 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
                     report_path = JOBS_ROOT / f"manual_{stamp}_delete_report.json"
                     write_json(report_path, rows)
                 self.send_json({"ok": True, "count": len(rows)})
+                return
+            if path == "/api/keyword-profile/save":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                content = text_value(payload.get("content"))
+                if not content.strip():
+                    self.send_json({"ok": False, "error": "내용이 비어 있습니다."}, 400)
+                    return
+                if "__INPUT_FILE__" not in content or "__OUTPUT_FILE__" not in content:
+                    self.send_json({"ok": False, "error": "__INPUT_FILE__ 와 __OUTPUT_FILE__ 플레이스홀더가 반드시 포함되어야 합니다."}, 400)
+                    return
+                KEYWORD_PROFILE_USER_PATH.parent.mkdir(parents=True, exist_ok=True)
+                KEYWORD_PROFILE_USER_PATH.write_text(content, encoding="utf-8")
+                self.send_json({"ok": True, "path": str(KEYWORD_PROFILE_USER_PATH), "source": "user"})
+                return
+            if path == "/api/keyword-profile/reset":
+                # 사용자 오버라이드 삭제 → 배포 기본으로 복귀
+                if KEYWORD_PROFILE_USER_PATH.is_file():
+                    KEYWORD_PROFILE_USER_PATH.unlink()
+                self.send_json({"ok": True, "source": get_keyword_profile_status()["source"]})
                 return
             if path == "/api/category-match/llm-judge":
                 payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")

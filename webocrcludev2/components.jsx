@@ -4787,6 +4787,7 @@ function UploadHistoryModal({ onClose }) {
 }
 
 function SettingsModal({ onClose }) {
+  const [tab, setTab] = useState('keys');
   const [files, setFiles] = useState({});
   const [statuses, setStatuses] = useState({});
   const [testing, setTesting] = useState(false);
@@ -4794,6 +4795,71 @@ function SettingsModal({ onClose }) {
   const [addOpen, setAddOpen] = useState(false);
   const [newMarket, setNewMarket] = useState({ market: '', mode: 'key' });
   const credentialItems = [...MARKET_CREDENTIALS, ...customMarkets];
+
+  // 키워드 프로파일 상태
+  const [profileText, setProfileText] = useState('');
+  const [profileSource, setProfileSource] = useState('');
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileMsg, setProfileMsg] = useState('');
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  const loadProfile = async () => {
+    setProfileBusy(true);
+    setProfileMsg('');
+    try {
+      const res = await fetch('/api/keyword-profile');
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `load ${res.status}`);
+      setProfileText(data.content || '');
+      setProfileSource(data.source || '');
+      setProfileLoaded(true);
+    } catch (err) {
+      setProfileMsg(`불러오기 실패: ${err.message}`);
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+  const saveProfile = async () => {
+    if (!profileText.includes('__INPUT_FILE__') || !profileText.includes('__OUTPUT_FILE__')) {
+      setProfileMsg('__INPUT_FILE__ 와 __OUTPUT_FILE__ 플레이스홀더가 반드시 있어야 합니다.');
+      return;
+    }
+    setProfileBusy(true);
+    setProfileMsg('');
+    try {
+      const res = await fetch('/api/keyword-profile/save', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: profileText }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `save ${res.status}`);
+      setProfileSource('user');
+      setProfileMsg('저장 완료 — 이 프로파일이 키워드 생성에 사용됩니다.');
+    } catch (err) {
+      setProfileMsg(`저장 실패: ${err.message}`);
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+  const resetProfile = async () => {
+    if (!window.confirm('내 프로파일을 삭제하고 배포 기본값으로 되돌립니다. 계속할까요?')) return;
+    setProfileBusy(true);
+    setProfileMsg('');
+    try {
+      const res = await fetch('/api/keyword-profile/reset', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `reset ${res.status}`);
+      await loadProfile();
+      setProfileMsg('기본값으로 복원했습니다.');
+    } catch (err) {
+      setProfileMsg(`복원 실패: ${err.message}`);
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+  useEffect(() => {
+    if (tab === 'keyword' && !profileLoaded) loadProfile();
+  }, [tab, profileLoaded]);
+  const sourceLabel = { user: '내 프로파일 (사용 중)', default: '배포 기본값', fallback: '코드 내장' }[profileSource] || profileSource;
 
   const applyServerItems = (items = []) => {
     const nextFiles = {};
@@ -4875,15 +4941,27 @@ function SettingsModal({ onClose }) {
         <div className="settings-head-wrap">
           <div className="settings-head">
             <div>
-              <span className="t-eyebrow">settings · market_keys</span>
-              <h3>마켓 키 / 엑셀 서식</h3>
+              <span className="t-eyebrow">settings · {tab === 'keys' ? 'market_keys' : 'keyword_profile'}</span>
+              <h3>{tab === 'keys' ? '마켓 키 / 엑셀 서식' : '키워드 프로파일'}</h3>
             </div>
             <div className="settings-head-actions">
-              <GhostBtn onClick={() => setAddOpen((open) => !open)}>마켓 추가</GhostBtn>
+              {tab === 'keys' && <GhostBtn onClick={() => setAddOpen((open) => !open)}>마켓 추가</GhostBtn>}
               <IconBtn icon={<IconClose size={18}/>} label="닫기" onClick={onClose}/>
             </div>
           </div>
-          {addOpen && (
+          <div style={{display: 'flex', gap: 6, padding: '4px 0 2px'}}>
+            <button type="button" onClick={() => setTab('keys')}
+              style={{padding: '6px 14px', borderRadius: 8, border: '1px solid var(--line,#e3e6ef)', cursor: 'pointer',
+                background: tab === 'keys' ? 'var(--accent,#5a6eff)' : 'transparent', color: tab === 'keys' ? '#fff' : 'inherit', fontWeight: tab === 'keys' ? 600 : 400}}>
+              마켓 키
+            </button>
+            <button type="button" onClick={() => setTab('keyword')}
+              style={{padding: '6px 14px', borderRadius: 8, border: '1px solid var(--line,#e3e6ef)', cursor: 'pointer',
+                background: tab === 'keyword' ? 'var(--accent,#5a6eff)' : 'transparent', color: tab === 'keyword' ? '#fff' : 'inherit', fontWeight: tab === 'keyword' ? 600 : 400}}>
+              키워드 프로파일
+            </button>
+          </div>
+          {tab === 'keys' && addOpen && (
             <div className="market-add-panel">
               <label>
                 <span>마켓명</span>
@@ -4906,35 +4984,64 @@ function SettingsModal({ onClose }) {
           )}
         </div>
 
-        <div className="settings-grid">
-          <div className="settings-grid-head">마켓</div>
-          <div className="settings-grid-head">A계정</div>
-          <div className="settings-grid-head">B계정</div>
+        {tab === 'keys' && (
+          <div className="settings-grid">
+            <div className="settings-grid-head">마켓</div>
+            <div className="settings-grid-head">A계정</div>
+            <div className="settings-grid-head">B계정</div>
 
-          {credentialItems.map((item) => (
-            <React.Fragment key={item.market}>
-              <div className="setting-market">
-                <strong>{item.market}</strong>
-                <span>{item.mode === 'template' ? 'Excel 서식' : 'API 키'}{item.custom ? ' · 추가됨' : ''}</span>
-              </div>
-              {['A', 'B'].map((account) => (
-                <SettingDropCell
-                  key={`${account}:${item.market}`}
-                  account={account}
-                  item={item}
-                  value={files[`${account}:${item.market}`]}
-                  status={statuses[`${account}:${item.market}`]}
-                  onFile={uploadFile}/>
-              ))}
-            </React.Fragment>
-          ))}
-        </div>
+            {credentialItems.map((item) => (
+              <React.Fragment key={item.market}>
+                <div className="setting-market">
+                  <strong>{item.market}</strong>
+                  <span>{item.mode === 'template' ? 'Excel 서식' : 'API 키'}{item.custom ? ' · 추가됨' : ''}</span>
+                </div>
+                {['A', 'B'].map((account) => (
+                  <SettingDropCell
+                    key={`${account}:${item.market}`}
+                    account={account}
+                    item={item}
+                    value={files[`${account}:${item.market}`]}
+                    status={statuses[`${account}:${item.market}`]}
+                    onFile={uploadFile}/>
+                ))}
+              </React.Fragment>
+            ))}
+          </div>
+        )}
+
+        {tab === 'keyword' && (
+          <div style={{padding: '8px 0 4px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1, minHeight: 0}}>
+            <div style={{display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap'}}>
+              <span style={{fontSize: 13}}>현재 적용: <strong>{sourceLabel}</strong></span>
+              <small style={{opacity: 0.65}}>__INPUT_FILE__ / __OUTPUT_FILE__ / __IMAGE_BLOCK__ 플레이스홀더는 그대로 유지하세요</small>
+            </div>
+            <textarea
+              value={profileText}
+              onChange={(e) => setProfileText(e.target.value)}
+              spellCheck={false}
+              style={{width: '100%', flex: 1, minHeight: 380, fontFamily: 'monospace', fontSize: 12.5, lineHeight: 1.5,
+                padding: 12, borderRadius: 10, border: '1px solid var(--line,#e3e6ef)', resize: 'vertical', whiteSpace: 'pre', overflowWrap: 'normal', overflowX: 'auto'}}
+              placeholder={profileBusy ? '불러오는 중…' : '키워드 생성 프롬프트'}/>
+            {profileMsg && <small style={{color: profileMsg.includes('실패') ? '#c0392b' : '#1a7f37'}}>{profileMsg}</small>}
+          </div>
+        )}
 
         <div className="settings-actions">
           <GhostBtn onClick={onClose}>닫기</GhostBtn>
-          <AuroraBtn icon={<IconSync size={16}/>} onClick={testMarketKeys} disabled={testing}>
-            {testing ? '호출 테스트 중' : '전체 호출 테스트'}
-          </AuroraBtn>
+          {tab === 'keys' && (
+            <AuroraBtn icon={<IconSync size={16}/>} onClick={testMarketKeys} disabled={testing}>
+              {testing ? '호출 테스트 중' : '전체 호출 테스트'}
+            </AuroraBtn>
+          )}
+          {tab === 'keyword' && (
+            <React.Fragment>
+              <GhostBtn onClick={resetProfile} disabled={profileBusy}>기본값으로 복원</GhostBtn>
+              <AuroraBtn icon={<IconFile size={16}/>} onClick={saveProfile} disabled={profileBusy}>
+                {profileBusy ? '처리 중' : '내 프로파일로 저장'}
+              </AuroraBtn>
+            </React.Fragment>
+          )}
         </div>
       </aside>
     </div>
