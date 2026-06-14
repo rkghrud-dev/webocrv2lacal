@@ -7641,6 +7641,101 @@ def open_emergency_codex_session(payload: dict) -> dict:
     }
 
 
+def open_keyword_profile_codex_session(payload: dict) -> dict:
+    """키워드 프로파일을 Codex 대화로 수정. 긴급복구와 동일하게 컨텍스트+ps1 런처를 만들고 codex를 연다.
+
+    Codex가 마켓별 질문형(1/2/3 보기 + 주관식)으로 진행하며, 최종 결과를
+    data/config/keyword_profile.md(사용자 프로파일)로 저장하도록 지시한다.
+    """
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_id = f"keyword_{stamp}_{uuid.uuid4().hex[:6]}"
+    target = EMERGENCY_ROOT / session_id
+    target.mkdir(parents=True, exist_ok=True)
+
+    intent = text_value(payload.get("intent") or payload.get("instruction")).strip()
+    current_profile = load_keyword_profile_template()
+    if current_profile is None:
+        current_profile = _build_keyword_prompt_legacy("__INPUT_FILE__", "__OUTPUT_FILE__", False)
+    source = get_keyword_profile_status().get("source", "default")
+
+    # 현재 프로파일 스냅샷 저장 (codex가 읽을 원본)
+    snapshot_path = target / "current_keyword_profile.md"
+    snapshot_path.write_text(current_profile, encoding="utf-8")
+
+    user_profile_path = KEYWORD_PROFILE_USER_PATH
+    default_profile_path = KEYWORD_PROFILE_DEFAULT_PATH
+
+    request_lines = [
+        "# 키워드 프로파일 맞춤 수정 Codex 세션",
+        "",
+        "이 세션은 WebOcrClude 설정 화면의 '키워드 프로파일' 탭에서 열렸습니다.",
+        "당신의 임무는 사용자와 대화하면서 키워드 생성 프롬프트(프로파일)를 사용자에 맞게 고치는 것입니다.",
+        "",
+        "## 현재 프로파일",
+        f"- 출처: {source}",
+        f"- 현재 프로파일 스냅샷: {snapshot_path}",
+        f"- 배포 기본값: {default_profile_path}",
+        f"- 저장 위치(반드시 여기에 최종본 저장): {user_profile_path}",
+        "",
+        "## 사용자가 입력한 수정 의도",
+        f"{intent or '(빈 입력 — 먼저 무엇을 바꾸고 싶은지 사용자에게 물어볼 것)'}",
+        "",
+        "## 진행 방식 (반드시 질문형으로)",
+        "- 한 번에 다 고치지 말고, 마켓/항목별로 하나씩 질문하세요.",
+        "- 각 질문은 보기 번호(1/2/3 ...)와 '직접 입력'(주관식) 선택지를 함께 제시하세요.",
+        "- 예: '네이버 상품명 길이를 어떻게 할까요? 1) 40~50자 유지 2) 35~45자로 짧게 3) 50~60자로 길게 4) 직접 입력'",
+        "- 질문 순서 예: ① 사용할 마켓/계정 구성(몇 채널) ② 마켓별 길이 ③ 마켓별 강조축/페르소나 ④ 금지어 추가 ⑤ 중복 규칙 강도 ⑥ 기타.",
+        "- 사용자가 답할 때마다 해당 부분만 프로파일에 반영하고, 다음 질문으로 넘어가세요.",
+        "- 사용자가 '그만'/'저장'이라고 하면 즉시 저장 단계로 갑니다.",
+        "",
+        "## 반드시 지킬 것",
+        f"- 최종 프로파일은 반드시 `{user_profile_path}` 경로에 UTF-8로 저장하세요(폴더가 없으면 만드세요).",
+        "- `__INPUT_FILE__`, `__OUTPUT_FILE__`, `__IMAGE_BLOCK__` 세 플레이스홀더는 절대 삭제하지 말고 그대로 두세요(실행 시 자동 치환됨).",
+        "- 출력 JSON 스키마 부분(webocr.keyword.v1, channels 구조)은 형식을 깨지 마세요.",
+        "- 저장 전에 변경 요약을 사용자에게 보여주고 확인을 받으세요.",
+        "- 코드 파일(.py/.jsx)은 수정하지 마세요. 키워드 프로파일 .md만 다룹니다.",
+        "",
+        "## 첫 응답 형식",
+        "1. 현재 프로파일 핵심 요약(현재 몇 채널, 마켓별 길이 기준)",
+        "2. 사용자 수정 의도 확인",
+        "3. 첫 번째 질문(보기 번호 + 직접 입력 포함)",
+    ]
+    request_path = target / "keyword_request.md"
+    request_path.write_text("\n".join(request_lines), encoding="utf-8")
+
+    launcher_path = target / "open_codex_keyword.ps1"
+    ps = [
+        "$ErrorActionPreference = 'Stop'",
+        f"Set-Location -LiteralPath {json.dumps(str(PROJECT_ROOT), ensure_ascii=False)}",
+        f"$requestPath = {json.dumps(str(request_path), ensure_ascii=False)}",
+        "$prompt = Get-Content -LiteralPath $requestPath -Raw -Encoding UTF8",
+        "Write-Host ''",
+        "Write-Host '=== WebOcrClude 키워드 프로파일 맞춤 수정 ===' -ForegroundColor Cyan",
+        "Write-Host ('요청 파일: ' + $requestPath) -ForegroundColor DarkGray",
+        "Write-Host 'Codex가 현재 프로파일을 읽은 상태로 시작합니다. 질문에 답하면서 나만의 키워드 셋을 만드세요.' -ForegroundColor Yellow",
+        "Write-Host ''",
+        f"codex --cd {json.dumps(str(PROJECT_ROOT), ensure_ascii=False)} --sandbox danger-full-access --ask-for-approval on-request --no-alt-screen $prompt",
+    ]
+    launcher_path.write_text("\n".join(ps), encoding="utf-8")
+
+    if payload.get("dryRun"):
+        return {
+            "ok": True, "id": session_id, "pid": 0,
+            "requestPath": str(request_path), "launcherPath": str(launcher_path),
+            "message": "Codex 키워드 수정 세션 준비 완료(dryRun).", "dryRun": True,
+        }
+
+    args = ["powershell.exe", "-NoExit", "-ExecutionPolicy", "Bypass", "-File", str(launcher_path)]
+    creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    process = subprocess.Popen(args, cwd=str(PROJECT_ROOT), creationflags=creationflags)
+    return {
+        "ok": True, "id": session_id, "pid": process.pid,
+        "requestPath": str(request_path), "launcherPath": str(launcher_path),
+        "savePath": str(user_profile_path),
+        "message": "Codex 키워드 프로파일 수정 세션을 열었습니다. 새 PowerShell 창에서 대화하세요.",
+    }
+
+
 def write_market_export(payload: dict) -> dict:
     entries = normalize_upload_entries(payload)
     market = safe_name(text_value(payload.get("market") or "market"), "market")
@@ -9690,6 +9785,10 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
                 if KEYWORD_PROFILE_USER_PATH.is_file():
                     KEYWORD_PROFILE_USER_PATH.unlink()
                 self.send_json({"ok": True, "source": get_keyword_profile_status()["source"]})
+                return
+            if path == "/api/keyword-profile/codex":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                self.send_json(open_keyword_profile_codex_session(payload))
                 return
             if path == "/api/category-match/llm-judge":
                 payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")

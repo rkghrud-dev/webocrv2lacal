@@ -1724,6 +1724,7 @@ function WorkflowActionPanel({
   onToggleMarket,
 }) {
   const [dragOffset, setDragOffset] = useState({x: 0, y: 0});
+  const [marketsCollapsed, setMarketsCollapsed] = useState(true);
   const dragRef = useRef(null);
   const draggingRef = useRef(false);
   const startRef = useRef({mx: 0, my: 0, ox: 0, oy: 0});
@@ -1798,7 +1799,20 @@ function WorkflowActionPanel({
         <div className="wap-head wap-drag" onMouseDown={onDragStart} onDoubleClick={() => setDragOffset({x:0,y:0})}>
           <span className="t-eyebrow">seed_setup · markets</span>
           <h3>마켓 선택</h3>
+          <button
+            type="button"
+            className="wap-collapse-btn"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={() => setMarketsCollapsed((v) => !v)}
+            title={marketsCollapsed ? '펼치기' : '접기'}
+            style={{marginLeft: 'auto', border: '1px solid var(--line,#e3e6ef)', background: 'transparent',
+              borderRadius: 6, padding: '2px 10px', cursor: 'pointer', fontSize: 12}}>
+            {marketsCollapsed
+              ? `펼치기 (A ${MARKETS.filter(m => markets[`A:${m}`] !== false).length} · B ${MARKETS.filter(m => markets[`B:${m}`] !== false).length})`
+              : '접기'}
+          </button>
         </div>
+        {!marketsCollapsed && (
         <div className="market-checks">
           {['A', 'B'].map((account) => (
             <div className="market-tile-list" key={account}>
@@ -1824,6 +1838,7 @@ function WorkflowActionPanel({
             </div>
           ))}
         </div>
+        )}
         <p className="step-nav-hint">대표이미지를 확인하고 마켓을 선택한 뒤 키워드 생성으로 이동한다.</p>
       </aside>
     );
@@ -4840,6 +4855,24 @@ function SettingsModal({ onClose }) {
       setProfileBusy(false);
     }
   };
+  const [codexIntent, setCodexIntent] = useState('');
+  const openCodexKeyword = async () => {
+    setProfileBusy(true);
+    setProfileMsg('');
+    try {
+      const res = await fetch('/api/keyword-profile/codex', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ intent: codexIntent }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `codex ${res.status}`);
+      setProfileMsg('Codex 창을 열었습니다. 새 PowerShell 창에서 질문에 답하며 프로파일을 만드세요. 저장 후 [다시 불러오기]를 누르면 반영됩니다.');
+    } catch (err) {
+      setProfileMsg(`Codex 실행 실패: ${err.message}`);
+    } finally {
+      setProfileBusy(false);
+    }
+  };
   const resetProfile = async () => {
     if (!window.confirm('내 프로파일을 삭제하고 배포 기본값으로 되돌립니다. 계속할까요?')) return;
     setProfileBusy(true);
@@ -5014,7 +5047,24 @@ function SettingsModal({ onClose }) {
           <div style={{padding: '8px 0 4px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1, minHeight: 0}}>
             <div style={{display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap'}}>
               <span style={{fontSize: 13}}>현재 적용: <strong>{sourceLabel}</strong></span>
+              <GhostBtn onClick={loadProfile} disabled={profileBusy}>다시 불러오기</GhostBtn>
               <small style={{opacity: 0.65}}>__INPUT_FILE__ / __OUTPUT_FILE__ / __IMAGE_BLOCK__ 플레이스홀더는 그대로 유지하세요</small>
+            </div>
+            <div style={{display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', borderRadius: 10,
+              border: '1px solid var(--line,#e3e6ef)', background: 'var(--surface-2, rgba(90,110,255,0.04))'}}>
+              <strong style={{fontSize: 13}}>🤖 Codex로 대화하며 나만의 키워드 셋 만들기</strong>
+              <small style={{opacity: 0.7}}>무엇을 바꾸고 싶은지 적고 버튼을 누르면, 새 창에서 Codex가 마켓별로 보기(1·2·3)와 직접 입력 질문을 하며 프로파일을 고쳐 파일로 저장합니다.</small>
+              <textarea
+                value={codexIntent}
+                onChange={(e) => setCodexIntent(e.target.value)}
+                rows={2}
+                placeholder="예: 네이버는 더 짧게, 쿠팡은 더 길게. ESM 빼고 4개 마켓만 쓰고 싶어. 금지어에 '특가' 추가."
+                style={{width: '100%', fontSize: 13, padding: 8, borderRadius: 8, border: '1px solid var(--line,#e3e6ef)', resize: 'vertical'}}/>
+              <div>
+                <AuroraBtn icon={<IconSync size={16}/>} onClick={openCodexKeyword} disabled={profileBusy}>
+                  {profileBusy ? '여는 중' : 'Codex로 대화형 수정 시작'}
+                </AuroraBtn>
+              </div>
             </div>
             <textarea
               value={profileText}
