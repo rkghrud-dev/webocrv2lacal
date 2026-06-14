@@ -4855,6 +4855,100 @@ function SettingsModal({ onClose }) {
       setProfileBusy(false);
     }
   };
+  // 프로파일 라이브러리
+  const [library, setLibrary] = useState([]);
+  const [selectedProfile, setSelectedProfile] = useState('');
+  const [saveAsName, setSaveAsName] = useState('');
+  const importInputRef = useRef(null);
+  const loadLibrary = async () => {
+    try {
+      const res = await fetch('/api/keyword-profile/list');
+      const data = await res.json();
+      if (data?.ok) setLibrary(data.items || []);
+    } catch (_) {}
+  };
+  const saveAsProfile = async () => {
+    const name = saveAsName.trim();
+    if (!name) { setProfileMsg('저장할 이름을 입력하세요.'); return; }
+    if (!profileText.includes('__INPUT_FILE__') || !profileText.includes('__OUTPUT_FILE__')) {
+      setProfileMsg('__INPUT_FILE__ / __OUTPUT_FILE__ 플레이스홀더가 있어야 합니다.'); return;
+    }
+    setProfileBusy(true); setProfileMsg('');
+    try {
+      const res = await fetch('/api/keyword-profile/save-as', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, content: profileText, apply: true }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `save ${res.status}`);
+      setLibrary(data.items || []);
+      setSelectedProfile(data.name);
+      setProfileSource('user');
+      setSaveAsName('');
+      setProfileMsg(`'${data.name}' 저장 완료 — 라이브러리에 추가되고 현재 적용됩니다.`);
+    } catch (err) {
+      setProfileMsg(`저장 실패: ${err.message}`);
+    } finally { setProfileBusy(false); }
+  };
+  const loadProfileFromLibrary = async () => {
+    if (!selectedProfile) { setProfileMsg('불러올 프로파일을 선택하세요.'); return; }
+    setProfileBusy(true); setProfileMsg('');
+    try {
+      const res = await fetch('/api/keyword-profile/load', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: selectedProfile, apply: true }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `load ${res.status}`);
+      setProfileText(data.content || '');
+      setProfileSource('user');
+      setProfileMsg(`'${data.name}' 불러와 현재 적용했습니다.`);
+    } catch (err) {
+      setProfileMsg(`불러오기 실패: ${err.message}`);
+    } finally { setProfileBusy(false); }
+  };
+  const deleteProfileFromLibrary = async () => {
+    if (!selectedProfile) return;
+    if (!window.confirm(`'${selectedProfile}' 프로파일을 라이브러리에서 삭제합니다.`)) return;
+    setProfileBusy(true); setProfileMsg('');
+    try {
+      const res = await fetch('/api/keyword-profile/delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: selectedProfile }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `delete ${res.status}`);
+      setLibrary(data.items || []);
+      setSelectedProfile('');
+      setProfileMsg('삭제했습니다.');
+    } catch (err) {
+      setProfileMsg(`삭제 실패: ${err.message}`);
+    } finally { setProfileBusy(false); }
+  };
+  const downloadProfile = () => {
+    if (!selectedProfile) { setProfileMsg('내보낼 프로파일을 선택하세요.'); return; }
+    window.open(`/api/keyword-profile/download?name=${encodeURIComponent(selectedProfile)}`, '_blank');
+  };
+  const importProfileFile = async (file) => {
+    if (!file) return;
+    const text = await file.text();
+    const name = file.name.replace(/\.md$/i, '');
+    setProfileBusy(true); setProfileMsg('');
+    try {
+      const res = await fetch('/api/keyword-profile/import', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, content: text }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `import ${res.status}`);
+      setLibrary(data.items || []);
+      setSelectedProfile(data.name);
+      setProfileMsg(`'${data.name}' 가져오기 완료 — 라이브러리에 추가됨. 불러오기로 적용하세요.`);
+    } catch (err) {
+      setProfileMsg(`가져오기 실패: ${err.message}`);
+    } finally { setProfileBusy(false); }
+  };
+
   const [codexIntent, setCodexIntent] = useState('');
   const openCodexKeyword = async () => {
     setProfileBusy(true);
@@ -4890,7 +4984,7 @@ function SettingsModal({ onClose }) {
     }
   };
   useEffect(() => {
-    if (tab === 'keyword' && !profileLoaded) loadProfile();
+    if (tab === 'keyword' && !profileLoaded) { loadProfile(); loadLibrary(); }
   }, [tab, profileLoaded]);
   const sourceLabel = { user: '내 프로파일 (사용 중)', default: '배포 기본값', fallback: '코드 내장' }[profileSource] || profileSource;
 
@@ -5064,6 +5158,30 @@ function SettingsModal({ onClose }) {
                 <AuroraBtn icon={<IconSync size={16}/>} onClick={openCodexKeyword} disabled={profileBusy}>
                   {profileBusy ? '여는 중' : 'Codex로 대화형 수정 시작'}
                 </AuroraBtn>
+              </div>
+            </div>
+
+            <div style={{display: 'flex', flexDirection: 'column', gap: 8, padding: '10px 12px', borderRadius: 10,
+              border: '1px solid var(--line,#e3e6ef)'}}>
+              <strong style={{fontSize: 13}}>📁 프로파일 라이브러리</strong>
+              <div style={{display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap'}}>
+                <select value={selectedProfile} onChange={(e) => setSelectedProfile(e.target.value)}
+                  style={{flex: '1 1 200px', minWidth: 160, padding: '6px 8px', borderRadius: 8, border: '1px solid var(--line,#e3e6ef)'}}>
+                  <option value="">저장된 프로파일 선택…</option>
+                  {library.map((p) => <option key={p.name} value={p.name}>{p.name} ({p.updatedAt})</option>)}
+                </select>
+                <GhostBtn onClick={loadProfileFromLibrary} disabled={profileBusy || !selectedProfile}>불러와 적용</GhostBtn>
+                <GhostBtn onClick={downloadProfile} disabled={!selectedProfile}>파일로 내보내기</GhostBtn>
+                <GhostBtn onClick={deleteProfileFromLibrary} disabled={profileBusy || !selectedProfile}>삭제</GhostBtn>
+              </div>
+              <div style={{display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap'}}>
+                <input value={saveAsName} onChange={(e) => setSaveAsName(e.target.value)}
+                  placeholder="다른 이름으로 저장 (예: 4마켓_짧은버전)"
+                  style={{flex: '1 1 200px', minWidth: 160, padding: '6px 8px', borderRadius: 8, border: '1px solid var(--line,#e3e6ef)'}}/>
+                <AuroraBtn icon={<IconFile size={16}/>} onClick={saveAsProfile} disabled={profileBusy}>이름 저장</AuroraBtn>
+                <GhostBtn onClick={() => importInputRef.current?.click()} disabled={profileBusy}>파일 가져오기</GhostBtn>
+                <input ref={importInputRef} type="file" accept=".md,.txt" style={{display: 'none'}}
+                  onChange={(e) => { const f = e.target.files?.[0]; importProfileFile(f); e.target.value = ''; }}/>
               </div>
             </div>
             <textarea

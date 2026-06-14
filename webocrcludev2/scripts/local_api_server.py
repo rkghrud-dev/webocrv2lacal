@@ -4118,6 +4118,40 @@ def enrich_seed_products_with_naver_shopping(seed_payload: dict, selected_gs: li
 
 KEYWORD_PROFILE_USER_PATH = DATA_ROOT / "config" / "keyword_profile.md"
 KEYWORD_PROFILE_DEFAULT_PATH = ROOT / "config" / "keyword_profile_default.md"
+KEYWORD_PROFILE_LIBRARY_DIR = DATA_ROOT / "config" / "keyword_profiles"
+
+
+def keyword_profile_library_path(name: str) -> Path:
+    """라이브러리 내 프로파일 파일 경로. 경로 탈출 방지를 위해 파일명만 사용."""
+    clean = safe_name(text_value(name), "")
+    if not clean:
+        raise ValueError("프로파일 이름이 필요합니다.")
+    if not clean.lower().endswith(".md"):
+        clean = clean + ".md"
+    path = (KEYWORD_PROFILE_LIBRARY_DIR / clean).resolve()
+    if not is_within(KEYWORD_PROFILE_LIBRARY_DIR, path):
+        raise ValueError("잘못된 프로파일 이름입니다.")
+    return path
+
+
+def list_keyword_profiles() -> list[dict]:
+    """라이브러리에 저장된 프로파일 목록 (이름/수정시각/크기)."""
+    if not KEYWORD_PROFILE_LIBRARY_DIR.is_dir():
+        return []
+    items = []
+    for path in sorted(KEYWORD_PROFILE_LIBRARY_DIR.glob("*.md")):
+        try:
+            stat = path.stat()
+        except Exception:
+            continue
+        items.append({
+            "name": path.stem,
+            "fileName": path.name,
+            "updatedAt": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+            "size": stat.st_size,
+        })
+    items.sort(key=lambda it: it["updatedAt"], reverse=True)
+    return items
 
 KEYWORD_IMAGE_BLOCK = """
 이미지 분석 (중요):
@@ -9581,6 +9615,28 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
                 "defaultContent": default_text,
             })
             return
+        if path == "/api/keyword-profile/list":
+            self.send_json({"ok": True, "items": list_keyword_profiles()})
+            return
+        if path == "/api/keyword-profile/download":
+            params = parse_qs(parsed.query)
+            name = (params.get("name") or [""])[0]
+            try:
+                file_path = keyword_profile_library_path(name)
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, 400)
+                return
+            if not file_path.is_file():
+                self.send_json({"ok": False, "error": "프로파일을 찾을 수 없습니다."}, 404)
+                return
+            data = file_path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/markdown; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{urllib.parse.quote(file_path.name)}"')
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if path == "/api/categories":
             params = parse_qs(parsed.query)
             market = (params.get("market") or [""])[0]
@@ -9789,6 +9845,76 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
             if path == "/api/keyword-profile/codex":
                 payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
                 self.send_json(open_keyword_profile_codex_session(payload))
+                return
+            if path == "/api/keyword-profile/save-as":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                content = text_value(payload.get("content"))
+                name = text_value(payload.get("name"))
+                apply_active = bool(payload.get("apply", True))
+                if not content.strip():
+                    self.send_json({"ok": False, "error": "내용이 비어 있습니다."}, 400)
+                    return
+                if "__INPUT_FILE__" not in content or "__OUTPUT_FILE__" not in content:
+                    self.send_json({"ok": False, "error": "__INPUT_FILE__ 와 __OUTPUT_FILE__ 플레이스홀더가 반드시 포함되어야 합니다."}, 400)
+                    return
+                try:
+                    lib_path = keyword_profile_library_path(name)
+                except Exception as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, 400)
+                    return
+                lib_path.parent.mkdir(parents=True, exist_ok=True)
+                lib_path.write_text(content, encoding="utf-8")
+                if apply_active:
+                    KEYWORD_PROFILE_USER_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    KEYWORD_PROFILE_USER_PATH.write_text(content, encoding="utf-8")
+                self.send_json({"ok": True, "name": lib_path.stem, "applied": apply_active, "items": list_keyword_profiles()})
+                return
+            if path == "/api/keyword-profile/load":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                apply_active = bool(payload.get("apply", True))
+                try:
+                    lib_path = keyword_profile_library_path(text_value(payload.get("name")))
+                except Exception as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, 400)
+                    return
+                if not lib_path.is_file():
+                    self.send_json({"ok": False, "error": "프로파일을 찾을 수 없습니다."}, 404)
+                    return
+                content = lib_path.read_text(encoding="utf-8")
+                if apply_active:
+                    KEYWORD_PROFILE_USER_PATH.parent.mkdir(parents=True, exist_ok=True)
+                    KEYWORD_PROFILE_USER_PATH.write_text(content, encoding="utf-8")
+                self.send_json({"ok": True, "name": lib_path.stem, "content": content, "applied": apply_active})
+                return
+            if path == "/api/keyword-profile/delete":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                try:
+                    lib_path = keyword_profile_library_path(text_value(payload.get("name")))
+                except Exception as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, 400)
+                    return
+                if lib_path.is_file():
+                    lib_path.unlink()
+                self.send_json({"ok": True, "items": list_keyword_profiles()})
+                return
+            if path == "/api/keyword-profile/import":
+                payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
+                content = text_value(payload.get("content"))
+                name = text_value(payload.get("name")) or f"가져온프로파일_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                if not content.strip():
+                    self.send_json({"ok": False, "error": "파일 내용이 비어 있습니다."}, 400)
+                    return
+                if "__INPUT_FILE__" not in content or "__OUTPUT_FILE__" not in content:
+                    self.send_json({"ok": False, "error": "올바른 키워드 프로파일이 아닙니다(__INPUT_FILE__/__OUTPUT_FILE__ 누락)."}, 400)
+                    return
+                try:
+                    lib_path = keyword_profile_library_path(name)
+                except Exception as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, 400)
+                    return
+                lib_path.parent.mkdir(parents=True, exist_ok=True)
+                lib_path.write_text(content, encoding="utf-8")
+                self.send_json({"ok": True, "name": lib_path.stem, "items": list_keyword_profiles()})
                 return
             if path == "/api/category-match/llm-judge":
                 payload = json.loads(self.read_body().decode("utf-8", errors="replace") or "{}")
