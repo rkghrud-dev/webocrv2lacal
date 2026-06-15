@@ -534,14 +534,14 @@ public sealed class LotteOnUploadService
             "pdItmsCd",
             "상품품목코드");
 
-        // 서버(local_api_server)가 학습매핑/LLM판정/페어테이블로 채워서 넘기는 명시 페어를 신뢰한다.
-        // 페어 검증은 업로드 결과로 이뤄지며, 성공 시 서버가 페어 DB에 자동 등록한다.
+        // 표준-전시 조합은 검증된 페어만 사용한다. 미검증 페어를 그대로 보내면
+        // 롯데ON API에서 "맵핑된 전시카테고리번호가 아닙니다"로 거부된다.
         var explicitCategory = TryCompleteCategory(
             CleanCategoryCode(standard),
             CleanCategoryCode(display),
             CleanCategoryCode(itemCode),
             productName,
-            allowUnverifiedPair: true);
+            allowUnverifiedPair: false);
         if (explicitCategory is not null)
             return explicitCategory;
 
@@ -700,7 +700,11 @@ public sealed class LotteOnUploadService
                 {
                     foreach (var prop in root.EnumerateObject())
                     {
-                        var display = prop.Value.ValueKind == JsonValueKind.String ? prop.Value.GetString() : null;
+                        var display = prop.Value.ValueKind == JsonValueKind.String
+                            ? prop.Value.GetString()
+                            : prop.Value.ValueKind == JsonValueKind.Object && prop.Value.TryGetProperty("display", out var displayProp)
+                                ? displayProp.GetString()
+                                : null;
                         if (IsLotteStandardCode(prop.Name) && IsLotteDisplayCode(display))
                             result[prop.Name.Trim()] = display!.Trim();
                     }
@@ -853,10 +857,22 @@ public sealed class LotteOnUploadService
             if (!categoryByGs.TryGetValue(gsCode, out var category))
                 continue;
 
-            if (!string.IsNullOrWhiteSpace(category.Standard))
+            if (!string.IsNullOrWhiteSpace(category.Standard)
+                && string.IsNullOrWhiteSpace(FirstNonEmpty(row,
+                    "롯데ON표준카테고리코드",
+                    "롯데ON표준카테고리",
+                    "표준카테고리코드")))
+            {
                 row["롯데ON표준카테고리코드"] = category.Standard;
-            if (!string.IsNullOrWhiteSpace(category.Display))
+            }
+            if (!string.IsNullOrWhiteSpace(category.Display)
+                && string.IsNullOrWhiteSpace(FirstNonEmpty(row,
+                    "롯데ON전시카테고리코드",
+                    "롯데ON전시카테고리",
+                    "전시카테고리코드")))
+            {
                 row["롯데ON전시카테고리코드"] = category.Display;
+            }
         }
     }
 

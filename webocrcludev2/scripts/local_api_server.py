@@ -6267,7 +6267,7 @@ def update_export_image_selections(entries: list[dict]) -> None:
 
 
 def resolve_lotteon_upload_categories(entry: dict, out: dict[str, str]) -> None:
-    """롯데ON 표준/전시/품목 코드를 학습매핑 → LLM 판정 → 페어 테이블 순으로 채운다."""
+    """롯데ON 표준/전시/품목 코드를 학습매핑 → LLM 판정 → 후보 DB → 검증 페어 순으로 채운다."""
     standard = text_value(out.get("lotte_standard"))
     display = text_value(out.get("lotte_display"))
     item = text_value(out.get("lotte_item"))
@@ -6280,6 +6280,18 @@ def resolve_lotteon_upload_categories(entry: dict, out: dict[str, str]) -> None:
             standard = value
         elif value.startswith(("FC", "EC")) and not display:
             display = value
+
+    def fill_verified_pair() -> None:
+        nonlocal display, item
+        if not standard or (display and item) or get_lotteon_pair is None:
+            return
+        try:
+            pair = get_lotteon_pair(standard)
+        except Exception:
+            pair = None
+        if pair:
+            display = display or text_value(pair.get("display_code"))
+            item = item or text_value(pair.get("item_code"))
 
     # 1) 학습된 네이버→롯데ON 매핑 (검수/LLM으로 확정된 규칙)
     if not standard and naver_code and get_approved_category_mapping is not None:
@@ -6307,15 +6319,29 @@ def resolve_lotteon_upload_categories(entry: dict, out: dict[str, str]) -> None:
         except Exception:
             pass
 
-    # 3) 표준이 확보되면 페어 테이블로 전시/품목 유도
-    if standard and (not display or not item) and get_lotteon_pair is not None:
+    # 3) 네이버→롯데ON 후보 DB. 전시카테고리는 검증 페어가 있을 때만 채운다.
+    if not standard and naver_code and get_category_match_candidates is not None:
         try:
-            pair = get_lotteon_pair(standard)
+            candidates = get_category_match_candidates(naver_code, "lotteon", limit=5) or []
         except Exception:
-            pair = None
-        if pair:
-            display = display or text_value(pair.get("display_code"))
-            item = item or text_value(pair.get("item_code"))
+            candidates = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            code = text_value(candidate.get("target_category_id"))
+            if not code.startswith("BC"):
+                continue
+            status = text_value(candidate.get("review_status")).lower()
+            try:
+                score = float(candidate.get("confidence_score") or 0)
+            except (TypeError, ValueError):
+                score = 0.0
+            if status in {"auto_ready", "review_priority", "approved"} or score >= 0.55:
+                standard = code
+                break
+
+    # 4) 표준이 확보되면 페어 테이블로 전시/품목 유도
+    fill_verified_pair()
 
     if standard:
         out["lotte_standard"] = standard
@@ -6352,13 +6378,10 @@ def infer_direct_upload_categories(entry: dict) -> dict[str, str]:
             lotte_display="FC18101001",
             lotte_item="38",
         )
-    if re.search(r"카라비너|릴고리|릴홀더|키홀더|키링|연결고리|등산고리|고리", compact, re.IGNORECASE):
+    if re.search(r"카라비너|릴고리|릴홀더|키홀더|키링|연결고리|등산고리", compact, re.IGNORECASE):
         apply(
             naver="50002646",
             coupang="81718",
-            lotte_standard="BC20040800",
-            lotte_display="EC10400324",
-            lotte_item="38",
         )
     if re.search(r"에어컨.*커버|실외기.*커버|커버.*실외기", compact, re.IGNORECASE):
         apply(
@@ -6396,6 +6419,12 @@ def infer_direct_upload_categories(entry: dict) -> dict[str, str]:
         apply(
             coupang="64470",
         )
+    if re.search(r"(조화|인조꽃|니트꽃).*(꽃다발|다발|부케)|(꽃다발|다발|부케).*(조화|인조꽃|니트꽃)", compact, re.IGNORECASE):
+        apply(
+            lotte_standard="BC44080313",
+            lotte_display="FC12200213",
+            lotte_item="38",
+        )
     if re.search(r"나사|스크류|볼트|너트|브라켓|고정핀|철물|부속|부품", compact, re.IGNORECASE) and not out.get("coupang"):
         apply(
             naver="50003466",
@@ -6422,16 +6451,11 @@ def infer_direct_upload_categories(entry: dict) -> dict[str, str]:
             out["esm"] = text_value(matches[0].get("code"))
     # 롯데ON: 학습매핑 → LLM 판정 → 페어 테이블 순으로 우선 해석
     resolve_lotteon_upload_categories(entry, out)
-    if not out.get("lotte_standard") or not out.get("lotte_display"):
+    if not out.get("lotte_standard"):
         matches = search_category_reference("lotteon", text, 12)
-        if not out.get("lotte_standard"):
-            standard = next((item for item in matches if text_value(item.get("type")).lower() == "standard"), None)
-            if standard:
-                out["lotte_standard"] = text_value(standard.get("code"))
-        if not out.get("lotte_display"):
-            display = next((item for item in matches if text_value(item.get("type")).lower() == "display"), None)
-            if display:
-                out["lotte_display"] = text_value(display.get("code"))
+        standard = next((item for item in matches if text_value(item.get("type")).lower() == "standard"), None)
+        if standard:
+            out["lotte_standard"] = text_value(standard.get("code"))
         # 텍스트 검색으로 표준이 늦게 잡힌 경우 페어 테이블로 전시/품목 보완
         if out.get("lotte_standard") and (not out.get("lotte_display") or not out.get("lotte_item")) and get_lotteon_pair is not None:
             try:
@@ -7253,6 +7277,8 @@ def run_market_upload_job(job_id: str, payload: dict) -> None:
             if (
                 result.get("status") == "uploaded" and entry.get("market") == "롯데ON"
                 and record_lotteon_pair is not None
+                and not entry.get("dryRun")
+                and not text_value(result.get("rawStatus")).upper().startswith("DRY_RUN")
             ):
                 resolved = result.get("resolvedCategories") if isinstance(result.get("resolvedCategories"), dict) else {}
                 try:
