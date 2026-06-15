@@ -45,6 +45,7 @@ DOWNLOADS_ROOT = Path.home() / "Downloads"
 EMERGENCY_ROOT = DATA_ROOT / "emergency"
 MARKET_KEY_ROOT = DATA_ROOT / "market_keys"
 MARKET_KEY_SETTINGS = MARKET_KEY_ROOT / "settings.json"
+CAFE24_IMAGE_UPLOAD_CACHE = DATA_ROOT / "cafe24_image_upload_cache.json"
 CATEGORY_REFERENCE_ROOT = PROJECT_ROOT / "data" / "category_reference"
 DOTNET_UPLOAD_PROJECT = PROJECT_ROOT / "KeywordOcr.App.Tests" / "KeywordOcr.App.Tests.csproj"
 DOTNET_UPLOAD_EXE = PROJECT_ROOT / "KeywordOcr.App.Tests" / "bin" / "Debug" / "net8.0-windows" / "win-x64" / "KeywordOcr.App.Tests.exe"
@@ -7195,11 +7196,20 @@ def run_market_upload_job(job_id: str, payload: dict) -> None:
                                 log_lines.append(f"[{now_text()}] {entry['gs']} Cafe24 이미지 {len(images)}장 적용")
                         except Exception as exc:
                             log_lines.append(f"[{now_text()}] {entry['gs']} Cafe24 이미지 조회 실패: {str(exc)[:120]}")
+                        if not entry.get("_cafe24ListingImages"):
+                            try:
+                                upload_cafe24_path = resolve_cafe24_key_path_for_account(settings, "A") or cafe24_path
+                                images = upload_local_listing_images_to_cafe24(entry, upload_cafe24_path, "A")
+                                if images:
+                                    entry["_cafe24ListingImages"] = images
+                                    log_lines.append(f"[{now_text()}] {entry['gs']} 로컬 가공이미지 Cafe24 업로드 {len(images)}장 적용")
+                            except Exception as exc:
+                                log_lines.append(f"[{now_text()}] {entry['gs']} 로컬 가공이미지 Cafe24 업로드 실패: {str(exc)[:180]}")
                 if not entry.get("_cafe24ListingImages"):
                     # 대표이미지에 상세컷이 들어가는 사고 방지: 검증된 이미지 없이는 등록하지 않음
                     return {
                         **entry, "status": "failed", "updatedAt": now_text(),
-                        "error": "네이버/쿠팡 등록 이미지·Cafe24 기준 이미지를 모두 찾지 못했습니다. 네이버 또는 쿠팡에 먼저 업로드하세요.",
+                        "error": "네이버/쿠팡 등록 이미지·Cafe24 기준 이미지·로컬 가공이미지 업로드 URL을 모두 확보하지 못했습니다.",
                     }
                 result = upload_elevenst_product(entry)
             finally:
@@ -8341,6 +8351,176 @@ def get_cafe24_listing_images(cafe24_path: Path, gs: str, base_gs: str = "") -> 
             else:
                 add(item)
     return urls
+
+
+def cafe24_public_image_url(mall_id: str, path_value: object) -> str:
+    path = text_value(path_value)
+    if not path:
+        return ""
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    if path.startswith("//"):
+        return "https:" + path
+    if path.startswith("/"):
+        return f"https://{mall_id}.cafe24.com{path}"
+    return path if path.startswith("http") else ""
+
+
+def extract_cafe24_uploaded_image_url(payload: object, mall_id: str) -> str:
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return cafe24_public_image_url(mall_id, payload)
+    if isinstance(payload, list):
+        for item in payload:
+            url = extract_cafe24_uploaded_image_url(item, mall_id)
+            if elevenst_image_url(url):
+                return url
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+
+    candidates: list[object] = []
+    for key in ("path", "url", "image_url", "imageUrl"):
+        candidates.append(payload.get(key))
+    for key in ("image", "images", "uploaded_images", "uploadedImages"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            candidates.extend(value)
+        else:
+            candidates.append(value)
+
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            url = extract_cafe24_uploaded_image_url(candidate, mall_id)
+        else:
+            url = cafe24_public_image_url(mall_id, candidate)
+        if elevenst_image_url(url):
+            return url
+    return ""
+
+
+def cafe24_upload_cache_key(account: str, path: Path) -> str:
+    stat = path.stat()
+    resolved = str(path.resolve()).lower()
+    return f"{account or 'A'}|{resolved}|{stat.st_size}|{int(stat.st_mtime)}"
+
+
+def upload_image_to_cafe24(cafe24_path: Path, local_path: Path, account: str = "A") -> str:
+    """Upload one local jpg/jpeg/png image to Cafe24 and return its public URL."""
+    path = local_path.resolve()
+    if not path.is_file():
+        raise ValueError(f"이미지 파일 없음: {path}")
+    if path.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+        raise ValueError(f"11번가 허용 확장자가 아닙니다: {path.name}")
+    if path.stat().st_size > 10 * 1024 * 1024:
+        raise ValueError(f"Cafe24 업로드 제한(10MB) 초과: {path.name}")
+
+    cache_key = cafe24_upload_cache_key(account, path)
+    cache = read_json(CAFE24_IMAGE_UPLOAD_CACHE, {})
+    cached = cache.get(cache_key) if isinstance(cache, dict) else None
+    if isinstance(cached, dict) and elevenst_image_url(cached.get("url")):
+        return text_value(cached.get("url"))
+
+    cfg = read_secret_payload(cafe24_path)
+    mall_id = pick_secret(cfg, "MALL_ID", "mall_id", "mallId")
+    token = pick_secret(cfg, "ACCESS_TOKEN", "access_token", "accessToken")
+    api_version = pick_secret(cfg, "API_VERSION", "api_version", "apiVersion")
+    if not mall_id or not token:
+        raise ValueError("Cafe24 MALL_ID/ACCESS_TOKEN 없음")
+
+    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    url = f"https://{mall_id}.cafe24api.com/api/v2/admin/products/images"
+
+    def call(payload: dict, bearer: str, include_version: bool = True) -> tuple[bool, int | str, str]:
+        headers = {
+            "Authorization": f"Bearer {bearer}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if include_version and api_version:
+            headers["X-Cafe24-Api-Version"] = api_version
+        return request_text("POST", url, headers, json.dumps(payload).encode("utf-8"), timeout=60)
+
+    payloads = [
+        {"requests": [{"image": encoded}]},
+        {"images": [{"image": encoded}]},
+        {"image": encoded},
+        {"images": [encoded]},
+    ]
+    last_error = ""
+    for payload in payloads:
+        ok, status, body = call(payload, token)
+        if not ok and status == 400 and "version" in text_value(body).lower() and api_version:
+            ok, status, body = call(payload, token, include_version=False)
+        if not ok and status == 401:
+            refreshed, new_token = refresh_cafe24_access_token(cafe24_path, cfg, mall_id)
+            if refreshed:
+                token = new_token
+                ok, status, body = call(payload, token)
+        if ok:
+            public_url = extract_cafe24_uploaded_image_url(body, mall_id)
+            if not elevenst_image_url(public_url):
+                raise ValueError(f"Cafe24 이미지 URL 파싱 실패: {scrub_secret(body, 300)}")
+            cache[cache_key] = {
+                "url": public_url,
+                "account": account or "A",
+                "path": str(path),
+                "uploadedAt": now_text(),
+            }
+            write_json(CAFE24_IMAGE_UPLOAD_CACHE, cache)
+            return public_url
+        last_error = f"status={status}: {scrub_secret(body, 300)}"
+    raise ValueError(f"Cafe24 이미지 업로드 실패({path.name}) {last_error}")
+
+
+def local_listing_image_paths_for_entry(entry: dict, limit: int = 4) -> list[Path]:
+    sources: list[object] = [entry.get("mainImageSrc")]
+    additional = infer_additional_upload_images(entry)
+    sources.extend(additional)
+
+    def collect_paths(values: list[object]) -> list[Path]:
+        collected: list[Path] = []
+        seen_local: set[str] = set()
+        for value in values:
+            path = upload_image_src_to_path(value)
+            if path is None or path.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
+                continue
+            key = str(path.resolve()).lower()
+            if key in seen_local:
+                continue
+            seen_local.add(key)
+            collected.append(path)
+            if len(collected) >= limit:
+                break
+        return collected
+
+    paths = collect_paths(sources)
+    if paths:
+        return paths
+
+    base_code = base_gs_code(entry.get("baseGs") or entry.get("gs"))
+    if base_code:
+        processed = find_processed_listing_images(
+            text_value(entry.get("outputRoot") or entry.get("output_root")),
+            base_code,
+            min_count=1,
+        )
+        return collect_paths(processed.get("urls") if isinstance(processed.get("urls"), list) else [])
+    return []
+
+
+def upload_local_listing_images_to_cafe24(entry: dict, cafe24_path: Path, upload_account: str = "") -> list[str]:
+    paths = local_listing_image_paths_for_entry(entry, limit=4)
+    if not paths:
+        return []
+    account = text_value(upload_account) or text_value(entry.get("account")) or "A"
+    urls: list[str] = []
+    for path in paths:
+        urls.append(upload_image_to_cafe24(cafe24_path, path, account))
+        time.sleep(0.12)
+    return unique_image_urls([url for url in urls if elevenst_image_url(url)])
 
 
 NAVER_IMAGE_CLIENT_CACHE: dict[str, object] = {}
