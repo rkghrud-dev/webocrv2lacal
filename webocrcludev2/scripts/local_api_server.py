@@ -2396,6 +2396,14 @@ def sync_cafe24_token_copies(mall_id: str, access_token: str, refresh_token: str
 
 
 def refresh_cafe24_access_token(path: Path, cfg: dict[str, str], mall_id: str) -> tuple[bool, str]:
+    # Cafe24 refresh token은 1회용(회전). 송장관리자 등 다른 프로세스가 같은 파일을 갱신했을 수 있으므로
+    # 갱신 POST 직전에 파일에서 refresh_token을 다시 읽어 가장 최신값을 사용한다(레이스 완화).
+    try:
+        fresh_cfg = read_secret_payload(path)
+        if pick_secret(fresh_cfg, "REFRESH_TOKEN", "refresh_token", "refreshToken"):
+            cfg = fresh_cfg
+    except Exception:
+        pass
     refresh_token = pick_secret(cfg, "REFRESH_TOKEN", "refresh_token", "refreshToken")
     client_id = pick_secret(cfg, "CLIENT_ID", "client_id", "clientId")
     client_secret = pick_secret(cfg, "CLIENT_SECRET", "client_secret", "clientSecret")
@@ -8254,11 +8262,18 @@ def get_cafe24_listing_images(cafe24_path: Path, gs: str, base_gs: str = "") -> 
         return []
 
     def call(url: str, bearer: str) -> tuple[bool, object, str]:
-        return request_text("GET", url, {
+        ok, status, body = request_text("GET", url, {
             "Authorization": f"Bearer {bearer}",
             "X-Cafe24-Api-Version": api_version,
             "Accept": "application/json",
         })
+        # 토큰 파일의 ApiVersion이 이 몰 앱에서 미지원이면(다른 프로그램이 잘못 기록) 버전 헤더 없이 재시도.
+        if not ok and status == 400 and "version" in text_value(body).lower():
+            ok, status, body = request_text("GET", url, {
+                "Authorization": f"Bearer {bearer}",
+                "Accept": "application/json",
+            })
+        return ok, status, body
 
     def call_with_refresh(url: str) -> str:
         nonlocal token

@@ -90,6 +90,52 @@ public sealed class CoupangUploadService
         var results = new List<CoupangUploadResultItem>();
         var categoryCache = new Dictionary<long, JsonElement>();
         var deliveryTemplate = await LoadReferenceDeliveryTemplateAsync(api, Log, ct);
+        // 출고지/반품지/배송정보를 반드시 "이 계정(vendor)"의 유효 값으로 강제한다.
+        // 기준상품이 없는 계정(B 등)은 deliveryTemplate가 비어 출고지·배송방법·반품주소가 모두 누락되므로
+        // 출고지/반품지는 API 조회로, 배송방법 등 코어값은 쿠팡 표준 기본값으로 채워 완성한다.
+        deliveryTemplate ??= new JsonObject();
+        // BuildProduct가 출고지/반품지를 deliveryTemplate이 아니라 "별도 파라미터"로 받으므로
+        // 조회한 이 계정(vendor)의 유효 코드를 메서드 스코프로 끌어올려 BuildProduct에 직접 전달한다.
+        long? resolvedOutboundCode = null;
+        long? resolvedReturnCenterCode = null;
+        {
+            var t = deliveryTemplate;
+            void SetDefault(string key, JsonNode? value)
+            {
+                if (value is null) return;
+                if (!t.ContainsKey(key) || t[key] is null) t[key] = value;
+            }
+            // 출고지 먼저 주입 (반품지 조회 예외와 무관하게 항상 적용되도록 분리)
+            long? outboundCode = null;
+            try { outboundCode = await api.GetUsableOutboundCodeAsync(ct); }
+            catch (Exception ex) { Log($"출고지 조회 실패: {ShortError(ex.Message)}"); }
+            if (outboundCode is not null) { t["outboundShippingPlaceCode"] = outboundCode.Value; resolvedOutboundCode = outboundCode; }
+
+            JsonObject? returnCenter = null;
+            try { returnCenter = await api.GetUsableReturnCenterAsync(ct); }
+            catch (Exception ex) { Log($"반품지 조회 실패: {ShortError(ex.Message)}"); }
+            if (returnCenter is not null)
+            {
+                if (returnCenter["returnCenterCode"] is JsonNode rcc) { var rc = rcc.GetValue<long>(); t["returnCenterCode"] = rc; resolvedReturnCenterCode = rc; }
+                if (returnCenter["companyContactNumber"] is JsonNode ph) t["companyContactNumber"] = ph.GetValue<string>();
+                if (returnCenter["returnZipCode"] is JsonNode zip) t["returnZipCode"] = zip.GetValue<string>();
+                if (returnCenter["returnAddress"] is JsonNode ad) t["returnAddress"] = ad.GetValue<string>();
+                if (returnCenter["returnAddressDetail"] is JsonNode add) t["returnAddressDetail"] = add.GetValue<string>();
+                if (returnCenter["deliverCode"] is JsonNode dc) SetDefault("deliveryCompanyCode", dc.GetValue<string>());
+                if (returnCenter["shippingPlaceName"] is JsonNode nm) SetDefault("returnChargeName", nm.GetValue<string>());
+            }
+            // 코어 배송 기본값(A계정 성공 상품과 동일 표준값) — 템플릿에 없을 때만 채움
+            SetDefault("deliveryMethod", "SEQUENCIAL");
+            SetDefault("deliveryCompanyCode", "CJGLS");
+            SetDefault("deliveryChargeType", "CONDITIONAL_FREE");
+            SetDefault("deliveryCharge", 3000);
+            SetDefault("freeShipOverAmount", 50000);
+            SetDefault("deliveryChargeOnReturn", 0);
+            SetDefault("returnCharge", 3000);
+            SetDefault("remoteAreaDeliverable", "Y");
+            SetDefault("unionDeliveryType", "UNION_DELIVERY");
+            Log($"쿠팡 배송정보 적용(vendor {api.VendorId}): 출고지={outboundCode?.ToString() ?? "-"} 반품지={(returnCenter?["returnCenterCode"]?.ToString()) ?? "-"}");
+        }
         var cafe24TokenPath = string.IsNullOrWhiteSpace(options.Cafe24TokenPath)
             ? ResolveDefaultHomeCafe24TokenPath()
             : options.Cafe24TokenPath;
@@ -366,8 +412,8 @@ public sealed class CoupangUploadService
                 api.VendorId,
                 api.VendorUserId,
                 deliveryTemplate,
-                api.OutboundShippingPlaceCode,
-                api.ReturnCenterCode);
+                resolvedOutboundCode ?? api.OutboundShippingPlaceCode,
+                resolvedReturnCenterCode ?? api.ReturnCenterCode);
             var shortName = GetStr(row, "상품명");
             if (shortName.Length > 50) shortName = shortName[..50];
             var productGsCode = ExtractGsCode(row);

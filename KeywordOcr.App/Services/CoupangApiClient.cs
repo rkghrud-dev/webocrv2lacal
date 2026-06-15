@@ -4,8 +4,10 @@ using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
 using System.Security.Cryptography;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -230,6 +232,73 @@ public sealed class CoupangApiClient : IDisposable
         return await CallAsync("POST",
             "/v2/providers/seller_api/apis/api/v1/marketplace/seller-products",
             body: body, ct: ct);
+    }
+
+    /// <summary>이 계정(vendor)의 사용 가능한 출고지 코드. 없으면 null.</summary>
+    public async Task<long?> GetUsableOutboundCodeAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            using var doc = await CallAsync("GET",
+                "/v2/providers/marketplace_openapi/apis/api/v1/vendor/shipping-place/outbound",
+                query: "pageNum=1&pageSize=50", ct: ct);
+            if (doc.RootElement.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var it in content.EnumerateArray())
+                {
+                    var usable = it.TryGetProperty("usable", out var u) && u.ValueKind == JsonValueKind.True;
+                    if (usable && it.TryGetProperty("outboundShippingPlaceCode", out var code))
+                        return code.TryGetInt64(out var v) ? v : null;
+                }
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>이 계정(vendor)의 사용 가능한 반품지 상세(코드+주소+연락처+배송사). 없으면 null.</summary>
+    public async Task<JsonObject?> GetUsableReturnCenterAsync(CancellationToken ct = default)
+    {
+        try
+        {
+            using var doc = await CallAsync("GET",
+                $"/v2/providers/openapi/apis/api/v4/vendors/{_vendorId}/returnShippingCenters",
+                query: "pageSize=50", ct: ct);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("data", out var data))
+            {
+                JsonElement list = data;
+                if (data.ValueKind == JsonValueKind.Object && data.TryGetProperty("content", out var c)) list = c;
+                if (list.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var it in list.EnumerateArray())
+                    {
+                        var usable = it.TryGetProperty("usable", out var u2) ? u2.ValueKind == JsonValueKind.True
+                                   : (!it.TryGetProperty("usableYn", out var u) || u.ValueKind != JsonValueKind.False);
+                        if (!usable || !it.TryGetProperty("returnCenterCode", out var code)) continue;
+                        var result = new JsonObject();
+                        var codeStr = code.ValueKind == JsonValueKind.String ? code.GetString() : code.GetRawText();
+                        result["returnCenterCode"] = long.TryParse(codeStr, out var rcv) ? rcv : (JsonNode?)null;
+                        if (it.TryGetProperty("deliverCode", out var dc)) result["deliverCode"] = dc.GetString();
+                        if (it.TryGetProperty("shippingPlaceName", out var nm)) result["shippingPlaceName"] = nm.GetString();
+                        if (it.TryGetProperty("placeAddresses", out var addrs) && addrs.ValueKind == JsonValueKind.Array)
+                        {
+                            var a = addrs.EnumerateArray().FirstOrDefault();
+                            if (a.ValueKind == JsonValueKind.Object)
+                            {
+                                if (a.TryGetProperty("companyContactNumber", out var ph)) result["companyContactNumber"] = ph.GetString();
+                                if (a.TryGetProperty("returnZipCode", out var zip)) result["returnZipCode"] = zip.GetString();
+                                if (a.TryGetProperty("returnAddress", out var ad)) result["returnAddress"] = ad.GetString();
+                                if (a.TryGetProperty("returnAddressDetail", out var add)) result["returnAddressDetail"] = add.GetString();
+                            }
+                        }
+                        return result;
+                    }
+                }
+            }
+        }
+        catch { }
+        return null;
     }
 
     public void Dispose() => _http.Dispose();
