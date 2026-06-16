@@ -30,6 +30,9 @@ import urllib.parse
 import urllib.request
 import urllib.error
 
+if os.name == "nt":
+    import msvcrt
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = ROOT.parent
@@ -2352,6 +2355,29 @@ def set_secret_alias(raw: dict, aliases: list[str], value: str) -> None:
     raw[aliases[0]] = value
 
 
+@contextmanager
+def cafe24_token_file_lock(path: Path):
+    """Cross-process lock shared with Cafe24ShipmentManager for one-time refresh tokens."""
+    lock_path = Path(str(path) + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    try:
+        if os.name == "nt":
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            # This app runs on Windows, but keep a no-op fallback for non-Windows dev runs.
+            pass
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            handle.close()
+
+
 def sync_cafe24_token_copies(mall_id: str, access_token: str, refresh_token: str, source_path: Path) -> None:
     """같은 몰의 Cafe24 토큰 사본들에 갱신된 토큰을 동기화한다.
 
@@ -2397,53 +2423,54 @@ def sync_cafe24_token_copies(mall_id: str, access_token: str, refresh_token: str
 
 
 def refresh_cafe24_access_token(path: Path, cfg: dict[str, str], mall_id: str) -> tuple[bool, str]:
-    # Cafe24 refresh token은 1회용(회전). 송장관리자 등 다른 프로세스가 같은 파일을 갱신했을 수 있으므로
-    # 갱신 POST 직전에 파일에서 refresh_token을 다시 읽어 가장 최신값을 사용한다(레이스 완화).
-    try:
-        fresh_cfg = read_secret_payload(path)
-        if pick_secret(fresh_cfg, "REFRESH_TOKEN", "refresh_token", "refreshToken"):
-            cfg = fresh_cfg
-    except Exception:
-        pass
-    refresh_token = pick_secret(cfg, "REFRESH_TOKEN", "refresh_token", "refreshToken")
-    client_id = pick_secret(cfg, "CLIENT_ID", "client_id", "clientId")
-    client_secret = pick_secret(cfg, "CLIENT_SECRET", "client_secret", "clientSecret")
-    if not refresh_token or not client_id or not client_secret:
-        return False, "refresh_token/client 정보 없음"
-    basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
-    body = urllib.parse.urlencode({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-    }).encode("utf-8")
-    ok, status, response = request_text("POST", f"https://{mall_id}.cafe24api.com/api/v2/oauth/token", {
-        "Authorization": f"Basic {basic}",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json",
-    }, body)
-    if not ok:
-        return False, f"토큰 갱신 실패 status={status}: {scrub_secret(response)}"
-    try:
-        token_payload = json.loads(response)
-    except Exception:
-        return False, "토큰 갱신 응답 파싱 실패"
-    access_token = token_payload.get("access_token")
-    if not access_token:
-        return False, "토큰 갱신 응답에 access_token 없음"
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
-        if isinstance(raw, dict):
-            set_secret_alias(raw, ["AccessToken", "ACCESS_TOKEN", "access_token"], access_token)
-            if token_payload.get("refresh_token"):
-                set_secret_alias(raw, ["RefreshToken", "REFRESH_TOKEN", "refresh_token"], token_payload["refresh_token"])
-            set_secret_alias(raw, ["UpdatedAt", "UPDATED_AT", "updated_at"], now_text())
-            path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
+    with cafe24_token_file_lock(path):
+        # Cafe24 refresh token은 1회용(회전). 송장관리자 등 다른 프로세스가 같은 파일을 갱신했을 수 있으므로
+        # 갱신 POST 직전에 파일에서 refresh_token을 다시 읽어 가장 최신값을 사용한다.
+        try:
+            fresh_cfg = read_secret_payload(path)
+            if pick_secret(fresh_cfg, "REFRESH_TOKEN", "refresh_token", "refreshToken"):
+                cfg = fresh_cfg
+        except Exception:
+            pass
+        refresh_token = pick_secret(cfg, "REFRESH_TOKEN", "refresh_token", "refreshToken")
+        client_id = pick_secret(cfg, "CLIENT_ID", "client_id", "clientId")
+        client_secret = pick_secret(cfg, "CLIENT_SECRET", "client_secret", "clientSecret")
+        if not refresh_token or not client_id or not client_secret:
+            return False, "refresh_token/client 정보 없음"
+        basic = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
+        body = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        }).encode("utf-8")
+        ok, status, response = request_text("POST", f"https://{mall_id}.cafe24api.com/api/v2/oauth/token", {
+            "Authorization": f"Basic {basic}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        }, body)
+        if not ok:
+            return False, f"토큰 갱신 실패 status={status}: {scrub_secret(response)}"
+        try:
+            token_payload = json.loads(response)
+        except Exception:
+            return False, "토큰 갱신 응답 파싱 실패"
+        access_token = token_payload.get("access_token")
+        if not access_token:
+            return False, "토큰 갱신 응답에 access_token 없음"
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
+            if isinstance(raw, dict):
+                set_secret_alias(raw, ["AccessToken", "ACCESS_TOKEN", "access_token"], access_token)
+                if token_payload.get("refresh_token"):
+                    set_secret_alias(raw, ["RefreshToken", "REFRESH_TOKEN", "refresh_token"], token_payload["refresh_token"])
+                set_secret_alias(raw, ["UpdatedAt", "UPDATED_AT", "updated_at"], now_text())
+                path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            return True, access_token
+        try:
+            sync_cafe24_token_copies(mall_id, access_token, text_value(token_payload.get("refresh_token")), path)
+        except Exception:
+            pass
         return True, access_token
-    try:
-        sync_cafe24_token_copies(mall_id, access_token, text_value(token_payload.get("refresh_token")), path)
-    except Exception:
-        pass
-    return True, access_token
 
 
 def refresh_cafe24_upload_token(path: Path) -> tuple[bool, str]:
