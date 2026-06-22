@@ -433,6 +433,9 @@ public sealed class NaverUploadService
         // 옵션
         var options = NormalizeOptionPrices(ParseOptions(GetStr(row, "옵션입력"), GetStr(row, "옵션추가금")), ref salePrice);
 
+        var standardDeliveryInfo = CloneJsonObject(referenceDeliveryInfo) ?? BuildDefaultDeliveryInfo();
+        ApplyStandardDeliveryInfo(standardDeliveryInfo);
+
         var originProduct = new JsonObject
         {
             ["statusType"] = "SALE",
@@ -442,7 +445,7 @@ public sealed class NaverUploadService
             ["detailContent"] = detailHtml,
             ["salePrice"] = salePrice,
             ["stockQuantity"] = 999,
-            ["deliveryInfo"] = CloneJsonObject(referenceDeliveryInfo) ?? BuildDefaultDeliveryInfo(),
+            ["deliveryInfo"] = standardDeliveryInfo,
             ["detailAttribute"] = new JsonObject
             {
                 ["sellerCodeInfo"] = new JsonObject
@@ -490,7 +493,7 @@ public sealed class NaverUploadService
             originProduct["images"] = images;
 
         if (originProduct["deliveryInfo"] is JsonObject deliveryInfo)
-            deliveryInfo["deliveryCompany"] = "CJGLS";
+            ApplyStandardDeliveryInfo(deliveryInfo);
 
         // 옵션 설정
         if (options.Count > 0 && originProduct["detailAttribute"] is JsonObject detailAttribute)
@@ -1224,22 +1227,45 @@ public sealed class NaverUploadService
 
     private static JsonObject BuildDefaultDeliveryInfo()
     {
-        return new JsonObject
+        var deliveryInfo = new JsonObject
         {
             ["deliveryType"] = "DELIVERY",
             ["deliveryAttributeType"] = "NORMAL",
             ["deliveryCompany"] = "CJGLS",
             ["deliveryFee"] = new JsonObject
             {
-                ["deliveryFeeType"] = "FREE",
-                ["baseFee"] = 0,
+                ["deliveryFeeType"] = "CONDITIONAL_FREE",
+                ["baseFee"] = 3000,
+                ["freeConditionalAmount"] = 50000,
+                ["deliveryFeePayType"] = "PREPAID",
             },
             ["claimDeliveryInfo"] = new JsonObject
             {
                 ["returnDeliveryFee"] = 3000,
-                ["exchangeDeliveryFee"] = 3000,
+                ["exchangeDeliveryFee"] = 6000,
             },
         };
+        ApplyStandardDeliveryInfo(deliveryInfo);
+        return deliveryInfo;
+    }
+
+    private static void ApplyStandardDeliveryInfo(JsonObject deliveryInfo)
+    {
+        deliveryInfo["deliveryType"] = "DELIVERY";
+        deliveryInfo["deliveryAttributeType"] = "NORMAL";
+        deliveryInfo["deliveryCompany"] = "CJGLS";
+        deliveryInfo["deliveryFee"] = new JsonObject
+        {
+            ["deliveryFeeType"] = "CONDITIONAL_FREE",
+            ["baseFee"] = 3000,
+            ["freeConditionalAmount"] = 50000,
+            ["deliveryFeePayType"] = "PREPAID",
+        };
+
+        var claimDeliveryInfo = deliveryInfo["claimDeliveryInfo"] as JsonObject ?? new JsonObject();
+        claimDeliveryInfo["returnDeliveryFee"] = 3000;
+        claimDeliveryInfo["exchangeDeliveryFee"] = 6000;
+        deliveryInfo["claimDeliveryInfo"] = claimDeliveryInfo;
     }
 
     private static JsonObject? CloneJsonObject(JsonObject? source)

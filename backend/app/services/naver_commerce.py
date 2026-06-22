@@ -538,12 +538,14 @@ def build_naver_product(row: dict, category_id: str | None = None) -> dict:
         "deliveryAttributeType": "NORMAL",
         "deliveryCompany": "CJGLS",
         "deliveryFee": {
-            "deliveryFeeType": "FREE",
-            "baseFee": 0,
+            "deliveryFeeType": "CONDITIONAL_FREE",
+            "baseFee": 3000,
+            "freeConditionalAmount": 50000,
+            "deliveryFeePayType": "PREPAID",
         },
         "claimDeliveryInfo": {
             "returnDeliveryFee": 3000,
-            "exchangeDeliveryFee": 3000,
+            "exchangeDeliveryFee": 6000,
         },
     }
 
