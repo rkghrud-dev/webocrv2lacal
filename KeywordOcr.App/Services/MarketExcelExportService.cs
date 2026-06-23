@@ -207,9 +207,10 @@ public sealed class MarketExcelExportService
                 SetText(sheet, rowNumber, 101, "01");
                 SetText(sheet, rowNumber, 102, "00034");
                 SetText(sheet, rowNumber, 103, "1228104");
-                SetText(sheet, rowNumber, 105, "01");
-                SetNumber(sheet, rowNumber, 106, 0);
-                SetText(sheet, rowNumber, 108, "Y");
+                SetText(sheet, rowNumber, 105, "03");
+                SetNumber(sheet, rowNumber, 106, 3000);
+                SetNumber(sheet, rowNumber, 107, 50000);
+                SetText(sheet, rowNumber, 108, "N");
                 SetText(sheet, rowNumber, 109, "03");
                 SetNumber(sheet, rowNumber, 111, 3000);
                 SetText(sheet, rowNumber, 112, "01");

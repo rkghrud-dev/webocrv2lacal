@@ -8934,9 +8934,11 @@ def build_elevenst_product_xml(entry: dict) -> str:
         "<dlvCnAreaCd>01</dlvCnAreaCd>",
         "<dlvWyCd>01</dlvWyCd>",
         "<dlvEtprsCd>00034</dlvEtprsCd>",
-        "<dlvCstInstBasiCd>01</dlvCstInstBasiCd>",
-        "<bndlDlvCnYn>Y</bndlDlvCnYn>",
-        "<dlvCstPayTypCd>01</dlvCstPayTypCd>",
+        "<dlvCstInstBasiCd>03</dlvCstInstBasiCd>",
+        "<dlvCst1>3000</dlvCst1>",
+        "<PrdFrDlvBasiAmt>50000</PrdFrDlvBasiAmt>",
+        "<bndlDlvCnYn>N</bndlDlvCnYn>",
+        "<dlvCstPayTypCd>03</dlvCstPayTypCd>",
         "<jejuDlvCst>3000</jejuDlvCst>",
         "<islandDlvCst>6000</islandDlvCst>",
         "<rtngdDlvCst>3000</rtngdDlvCst>",
@@ -9116,9 +9118,10 @@ def write_elevenst_template_export(entries: list[dict]) -> dict:
         put(row_number, 101, "01")
         put(row_number, 102, "00034")
         put(row_number, 103, "1228104")
-        put(row_number, 105, "01")
-        put(row_number, 106, 0)
-        put(row_number, 108, "Y")
+        put(row_number, 105, "03")
+        put(row_number, 106, 3000)
+        put(row_number, 107, 50000)
+        put(row_number, 108, "N")
         put(row_number, 109, "03")
         put(row_number, 111, 3000)
         put(row_number, 112, "01")
