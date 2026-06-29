@@ -1,0 +1,10 @@
+anthropic
+bcrypt
+chardet
+google-cloud-vision
+numpy
+openai
+openpyxl
+pandas
+pillow
+requests

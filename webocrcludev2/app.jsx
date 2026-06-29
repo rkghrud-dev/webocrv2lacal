@@ -2464,4 +2464,79 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+// ── 로그인 게이트: 프로그램은 로컬에서 돌지만, 진입은 중앙 서버 인증을 통과해야 한다 ──
+function LoginScreen({ onAuthed, serverUrl }) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [pending, setPending] = useState(false);
+
+  const submit = async (e) => {
+    e && e.preventDefault();
+    setError(''); setPending(false); setBusy(true);
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
+      const data = await res.json();
+      if (!data.ok) { setError(data.error || '로그인 실패'); return; }
+      if (data.active) { onAuthed(data); return; }
+      setPending(true);  // 로그인은 됐지만 아직 승인 대기
+    } catch (err) {
+      setError('로컬 서버와 통신 실패: ' + err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#0f1115'}}>
+      <form onSubmit={submit} style={{width:380,padding:'32px 28px',background:'#1a1d24',borderRadius:14,
+        boxShadow:'0 8px 40px rgba(0,0,0,.5)',color:'#e6e6e6',fontFamily:'system-ui'}}>
+        <div style={{fontSize:20,fontWeight:700,marginBottom:4}}>AI 마켓 관리자</div>
+        <div style={{fontSize:13,color:'#8a90a0',marginBottom:20}}>로그인 후 이용할 수 있습니다</div>
+        <label style={{fontSize:12,color:'#9aa0b0'}}>이메일</label>
+        <input value={email} onChange={e=>setEmail(e.target.value)} autoFocus
+          style={{width:'100%',boxSizing:'border-box',margin:'4px 0 12px',padding:'10px 12px',borderRadius:8,
+            border:'1px solid #2c3140',background:'#11141a',color:'#e6e6e6'}}/>
+        <label style={{fontSize:12,color:'#9aa0b0'}}>비밀번호</label>
+        <input type="password" value={password} onChange={e=>setPassword(e.target.value)}
+          style={{width:'100%',boxSizing:'border-box',margin:'4px 0 16px',padding:'10px 12px',borderRadius:8,
+            border:'1px solid #2c3140',background:'#11141a',color:'#e6e6e6'}}/>
+        <button type="submit" disabled={busy}
+          style={{width:'100%',padding:'11px',borderRadius:8,border:'none',cursor:'pointer',
+            background:'#5b6cff',color:'#fff',fontWeight:600,fontSize:14,opacity:busy?0.6:1}}>
+          {busy ? '확인 중…' : '로그인'}
+        </button>
+        {error && <div style={{marginTop:14,color:'#ff7a7a',fontSize:13}}>{error}</div>}
+        {pending && <div style={{marginTop:14,color:'#ffc24d',fontSize:13}}>
+          가입은 됐지만 아직 <b>승인 대기</b> 상태입니다. 운영자(master) 승인 후 이용할 수 있습니다.</div>}
+        <div style={{marginTop:18,fontSize:11,color:'#5a6072'}}>인증 서버: {serverUrl || '확인 중'}</div>
+      </form>
+    </div>
+  );
+}
+
+function LoginGate() {
+  const [phase, setPhase] = useState('loading'); // loading | login | ok
+  const [serverUrl, setServerUrl] = useState('');
+
+  useEffect(() => {
+    fetch('/api/auth-status').then(r => r.json()).then(d => {
+      setServerUrl(d.serverUrl || '');
+      setPhase(d.active ? 'ok' : 'login');
+    }).catch(() => setPhase('login'));
+  }, []);
+
+  if (phase === 'loading') {
+    return <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',
+      background:'#0f1115',color:'#8a90a0',fontFamily:'system-ui'}}>불러오는 중…</div>;
+  }
+  if (phase === 'ok') return <App/>;
+  return <LoginScreen serverUrl={serverUrl} onAuthed={() => setPhase('ok')}/>;
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<LoginGate/>);

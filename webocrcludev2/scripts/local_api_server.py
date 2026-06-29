@@ -56,6 +56,20 @@ DESKTOP_KEY_ROOT = Path(os.environ.get("WEBOCR_KEY_ROOT") or os.environ.get("KEY
 PRODUCT_MANAGER_ROOT = Path(os.environ.get("WEBOCR_PRODUCT_MANAGER_ROOT") or (Path.home() / "Desktop" / "ProductManager"))
 PRODUCT_MANAGER_DB = PRODUCT_MANAGER_ROOT / "data" / "products.db"
 
+# ── 중앙 인증 서버(WEBOCR3) 연동 ──
+# 프로그램은 로컬에서 무겁게 돌고, 로그인/인증만 중앙 서버에 위임한다.
+# 웹UI → (이 로컬 서버가 중계) → 중앙 서버. 브라우저는 중앙 서버를 직접 모른다.
+WEBOCR3_SERVER_URL = (os.environ.get("WEBOCR3_SERVER_URL") or "http://localhost:8100").rstrip("/")
+# 단일 로컬 사용자 세션(이 PC에서 한 명이 로그인해 쓰는 구조).
+AUTH_SESSION = {"token": None, "email": None, "status": None, "is_master": False}
+
+
+def auth_is_active() -> bool:
+    """로그인 + 승인(active)된 사용자 또는 master 인지."""
+    return bool(AUTH_SESSION.get("token") and (
+        AUTH_SESSION.get("status") == "active" or AUTH_SESSION.get("is_master")
+    ))
+
 for directory in (UPLOAD_ROOT, LOGO_ROOT, JOBS_ROOT, SEED_ROOT, EXPORT_ROOT, EMERGENCY_ROOT, MARKET_KEY_ROOT):
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -9802,6 +9816,69 @@ def pm_build_source_csv(products: list[dict]) -> Path:
     return target
 
 
+def _central_request(method: str, path: str, *, token: str = None, json_body: dict = None, form: dict = None):
+    """중앙 인증 서버 호출. (status_code, data) 반환. 네트워크 실패는 (0, {error})."""
+    url = WEBOCR3_SERVER_URL + path
+    data = None
+    headers = {}
+    if form is not None:
+        data = urllib.parse.urlencode(form).encode("utf-8")
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    elif json_body is not None:
+        data = json.dumps(json_body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return resp.status, json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode("utf-8"))
+        except Exception:
+            return e.code, {"detail": "error"}
+    except Exception as e:
+        return 0, {"error": f"서버에 연결할 수 없습니다({WEBOCR3_SERVER_URL}): {e}"}
+
+
+def central_login(email: str, password: str) -> dict:
+    """중앙 서버에 로그인 → 토큰 발급 → /auth/me로 상태 확인 → AUTH_SESSION 갱신.
+
+    반환: {ok, status, email, isMaster, active, error?}
+    """
+    status, data = _central_request("POST", "/auth/login", form={"username": email, "password": password})
+    if status == 0:
+        return {"ok": False, "error": data.get("error", "연결 실패")}
+    if status != 200 or "access_token" not in data:
+        detail = data.get("detail") if isinstance(data, dict) else data
+        return {"ok": False, "error": f"로그인 실패: {detail}"}
+    token = data["access_token"]
+    mstatus, me = _central_request("GET", "/auth/me", token=token)
+    if mstatus != 200:
+        return {"ok": False, "error": f"사용자 정보 조회 실패: {me.get('detail', me)}"}
+    AUTH_SESSION.update({
+        "token": token,
+        "email": me.get("email"),
+        "status": me.get("status"),
+        "is_master": bool(me.get("is_master")),
+    })
+    return {"ok": True, "status": me.get("status"), "email": me.get("email"),
+            "isMaster": bool(me.get("is_master")), "active": auth_is_active()}
+
+
+def auth_status_payload() -> dict:
+    return {
+        "ok": True,
+        "loggedIn": bool(AUTH_SESSION.get("token")),
+        "email": AUTH_SESSION.get("email"),
+        "status": AUTH_SESSION.get("status"),
+        "isMaster": AUTH_SESSION.get("is_master", False),
+        "active": auth_is_active(),
+        "serverUrl": WEBOCR3_SERVER_URL,
+    }
+
+
 class WebOcrHandler(SimpleHTTPRequestHandler):
     server_version = "WebOcrClude/0.1"
 
@@ -9835,6 +9912,9 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
         path = unquote(parsed.path)
         if path == "/api/health":
             self.send_json({"ok": True, "time": now_text()})
+            return
+        if path == "/api/auth-status":
+            self.send_json(auth_status_payload())
             return
         if path == "/api/seeds":
             self.send_json({"ok": True, "seeds": list_seed_summaries()})
@@ -9975,6 +10055,23 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
         try:
+            if path == "/api/login":
+                try:
+                    body = json.loads(self.read_body() or b"{}")
+                except Exception:
+                    body = {}
+                email = (body.get("email") or "").strip()
+                password = body.get("password") or ""
+                if not email or not password:
+                    self.send_json({"ok": False, "error": "이메일/비밀번호를 입력하세요."}, 400)
+                    return
+                result = central_login(email, password)
+                self.send_json(result, 200 if result.get("ok") else 401)
+                return
+            if path == "/api/logout":
+                AUTH_SESSION.update({"token": None, "email": None, "status": None, "is_master": False})
+                self.send_json({"ok": True})
+                return
             if path == "/api/import-source":
                 self.handle_import_file(UPLOAD_ROOT, "file")
                 return
@@ -10652,7 +10749,27 @@ class WebOcrHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": False, "error": "unknown seed action"}, 400)
 
 
+def _ensure_std_streams() -> None:
+    # pythonw.exe (windowless) leaves sys.stdout/sys.stderr as None. http.server
+    # logs every request to stderr, so a None stream makes each request crash with
+    # an empty reply. Redirect missing streams to a log file (or devnull) so request
+    # handling and logging keep working when launched without a console.
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        log_dir = DATA_ROOT / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stream = open(log_dir / "server.log", "a", encoding="utf-8", buffering=1)
+    except Exception:
+        stream = open(os.devnull, "w", encoding="utf-8")
+    if sys.stdout is None:
+        sys.stdout = stream
+    if sys.stderr is None:
+        sys.stderr = stream
+
+
 def main() -> int:
+    _ensure_std_streams()
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=6600)
     parser.add_argument("--host", default="127.0.0.1")
